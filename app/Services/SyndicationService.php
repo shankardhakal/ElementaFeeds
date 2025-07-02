@@ -15,6 +15,21 @@ class SyndicationService
      */
     public function syndicate(array $productData, FeedWebsite $connection, ApiClientInterface $apiClient): void
     {
+        // If a product_url is mapped, we automatically set the product type to 'external'.
+        // The 'button_text' can also be mapped by the user in the wizard.
+        if (!empty($productData['product_url'])) {
+            $productData['type'] = 'external';
+        }
+
+        // Handle image galleries. If the 'images' field is a comma-separated string,
+        // convert it into the array structure WooCommerce expects.
+        if (!empty($productData['images']) && is_string($productData['images'])) {
+            $imageUrls = array_map('trim', explode(',', $productData['images']));
+            $productData['images'] = array_map(function ($url) {
+                return ['src' => $url];
+            }, $imageUrls);
+        }
+
         // The 'sku' is the most reliable unique identifier for WooCommerce.
         // We will now explicitly log if it's missing from the transformed data.
         $sourceIdentifier = $productData['sku'] ?? null;

@@ -22,6 +22,10 @@ Thumbs.db
 .env.backup
 .env.production
 
+
+# Developmenet plans and tasks
+ DEVELOPMENT.md
+
 # IDE & editor specific files
 .phpactor.json
 .phpunit.result.cache

@@ -21,33 +21,19 @@
                 <div class="card-body">
                     @php
                         $sourceHeaders = $wizardData['sample_headers'] ?? [];
-                        function generate_mapping_dropdown($name, $label, $headers) {
-                            echo '<div class="form-group mb-2">';
-                            echo '<label for="'.$name.'" class="mb-0"><small>'.$label.'</small></label>';
-                            echo '<select name="field_mappings['.$name.']" class="form-control form-control-sm">';
-                            echo '<option value="">-- Do not map --</option>';
-                            foreach($headers as $header) {
-                                echo '<option value="'.e($header).'">'.e($header).'</option>';
-                            }
-                            echo '</select>';
-                            echo '</div>';
-                        }
                     @endphp
-                    
-                    {{ generate_mapping_dropdown('title', 'Product Title / Post Title', $sourceHeaders) }}
-                    {{ generate_mapping_dropdown('description', 'Description / Content', $sourceHeaders) }}
-                    {{ generate_mapping_dropdown('images', 'Images (comma-separated URLs)', $sourceHeaders) }}
 
-                    @if($website->platform === 'woocommerce')
-                        <div class="row">
-                            <div class="col-md-6">{{ generate_mapping_dropdown('regular_price', 'Regular Price', $sourceHeaders) }}</div>
-                            <div class="col-md-6">{{ generate_mapping_dropdown('sale_price', 'Sale Price', $sourceHeaders) }}</div>
+                    @foreach($destination_fields as $field_key => $field_label)
+                        <div class="form-group mb-2">
+                            <label for="{{ $field_key }}" class="mb-0"><small>{{ $field_label }}</small></label>
+                            <select name="field_mappings[{{ $field_key }}]" class="form-control form-control-sm">
+                                <option value="">-- Do not map --</option>
+                                @foreach($sourceHeaders as $header)
+                                    <option value="{{ e($header) }}">{{ e($header) }}</option>
+                                @endforeach
+                            </select>
                         </div>
-                        <div class="row">
-                            <div class="col-md-6">{{ generate_mapping_dropdown('sku', 'SKU (Unique Identifier)', $sourceHeaders) }}</div>
-                            <div class="col-md-6">{{ generate_mapping_dropdown('stock_quantity', 'Stock Quantity', $sourceHeaders) }}</div>
-                        </div>
-                    @endif
+                    @endforeach
                 </div>
             </div>
 

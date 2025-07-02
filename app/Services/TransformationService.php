@@ -28,23 +28,34 @@ class TransformationService
 
         // --- Handle Category Mapping ---
         $this->mapCategories($payload, $rawProduct, $fieldMappings, $categoryMappings);
-        
+
+        // --- Ensure button_text for external products ---
+        if (
+            (isset($payload['type']) && $payload['type'] === 'external') ||
+            (!empty($payload['product_url']))
+        ) {
+            $payload['button_text'] = 'Katso tuotetta';
+        }
+
         return $payload;
     }
 
     private function mapStandardFields(array &$payload, array $rawProduct, array $fieldMappings): void
     {
-        // Map source fields to destination API fields
+        // Map source fields to WooCommerce API fields
         $apiMap = [
-            'name'           => 'title',
-            'description'    => 'content',
-            'sku'            => 'sku',
-            'regular_price'  => 'regular_price',
-            'sale_price'     => 'sale_price',
-            'stock_quantity' => 'stock_quantity',
-            'images'         => 'images',
+            'name'              => 'name',            // Product Title
+            'description'       => 'description',      // Product Description (long)
+            'short_description' => 'short_description',// Product Short Description
+            'sku'               => 'sku',
+            'regular_price'     => 'regular_price',
+            'sale_price'        => 'sale_price',
+            'stock_quantity'    => 'stock_quantity',
+            'images'            => 'images',
+            'product_url'       => 'product_url',      // External/Affiliate URL
+            'button_text'       => 'button_text',      // Buy button text
             // This is the source feed column that contains the category string
-            'source_category' => 'product_type', 
+            'source_category'   => 'product_type',
         ];
 
         foreach ($apiMap as $apiField => $wizardField) {

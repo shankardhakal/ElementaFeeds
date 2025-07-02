@@ -122,6 +122,20 @@ class ConnectionController extends Controller
         $data['destination_categories'] = [];
         $data['destination_attributes'] = [];
 
+        // Define the standard destination fields available for mapping.
+        $data['destination_fields'] = [
+            'name' => 'Product Name',
+            'sku' => 'SKU',
+            'description' => 'Description',
+            'short_description' => 'Short Description',
+            'regular_price' => 'Regular Price',
+            'sale_price' => 'Sale Price',
+            'stock_quantity' => 'Stock Quantity',
+            'images' => 'Image Gallery (comma-separated URLs)',
+            'product_url' => 'External/Affiliate URL',
+            'button_text' => 'Button Text (for external products)',
+        ];
+
         try {
             $apiClient = ($website->platform === 'woocommerce')
                 ? new WooCommerceApiClient($website)
