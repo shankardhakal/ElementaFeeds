@@ -1,0 +1,55 @@
+# Laravel & Backpack specific files
+/vendor
+/node_modules
+/public/storage
+/public/build
+/storage/*.key
+/storage/*.pale
+/storage/*.cache
+/storage/framework/cache/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+/storage/logs/*
+/storage/backup/*
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Environment configuration files
+.env
+.env.local
+.env.backup
+.env.production
+
+# IDE & editor specific files
+.phpactor.json
+.phpunit.result.cache
+/.fleet
+/.idea
+/.nova
+/.phpunit.cache
+/.vscode
+/.zed
+
+# Sensitive files
+/auth.json
+Homestead.json
+Homestead.yaml
+
+# Backup files or intermediate files
+*.bak
+*.swp
+*.swo
+
+# Cache & temp files
+*.log
+*.tmp
+*.cache
+
+# Composer lock file 
+composer.lock
+
+# Laravel specific
+/.env.example
+/database/*.sqlite
