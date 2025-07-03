@@ -85,79 +85,177 @@ class WooCommerceApiClient implements ApiClientInterface
         return $response;
     }
 
+    /**
+     * Publish multiple products by ID (change status from draft to publish)
+     *
+     * @param array $productIds Array of WooCommerce product IDs to publish
+     * @return array API response
+     */
+    public function publishProducts(array $productIds): array
+    {
+        if (empty($productIds)) {
+            return [];
+        }
+
+        $batchPayload = [
+            'update' => []
+        ];
+
+        foreach ($productIds as $id) {
+            $batchPayload['update'][] = [
+                'id' => $id,
+                'status' => 'publish'
+            ];
+        }
+
+        return $this->batchProducts($batchPayload);
+    }
+
     protected function makeRequest(string $endpoint, array $params = [], string $method = 'GET'): array
     {
         $maxRetries = 3;
         $retryDelay = 5;
         $timeout = 180; // Increase timeout to 3 minutes for large batches
         
-        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+        // Use rate limiting for batch operations to protect the destination database
+        if ($endpoint === 'products/batch' && strtoupper($method) === 'POST') {
+            $websiteId = $this->getWebsiteId();
+            
+            // Check if we're hitting the rate limit
+            if (\Illuminate\Support\Facades\RateLimiter::tooManyAttempts('woocommerce-api:' . $websiteId, 5)) {
+                $seconds = \Illuminate\Support\Facades\RateLimiter::availableIn('woocommerce-api:' . $websiteId);
+                Log::warning("Rate limit reached for website ID {$websiteId}. Must wait {$seconds} seconds before trying again.");
+                sleep(min($seconds + 1, 60)); // Sleep up to 60 seconds max
+            }
+            
+            // Mark that we're using the rate limiter
+            \Illuminate\Support\Facades\RateLimiter::hit('woocommerce-api:' . $websiteId, 60); // Keeps track for 60 seconds
+        }
+        
+        if (!$this->validateCredentials()) {
+            throw new AuthenticationException('WooCommerce API credentials are invalid or missing.');
+        }
+
+        $url = $this->baseUrl . $endpoint;
+        $options = [
+            'timeout' => $timeout,
+            'connect_timeout' => 30,
+        ];
+
+        $attempt = 0;
+        $lastException = null;
+
+        while ($attempt < $maxRetries) {
             try {
-                $fullUrl = $this->baseUrl . rtrim($endpoint, '/') . '/';
-                
-                Log::debug("Making {$method} request to {$fullUrl} (attempt {$attempt}/{$maxRetries})");
-
-                $client = Http::withBasicAuth(
-                    $this->credentials['key'] ?? '',
-                    $this->credentials['secret'] ?? ''
-                )->timeout($timeout);
-
                 $response = match (strtoupper($method)) {
-                    'POST' => $client->post($fullUrl, $params),
-                    'PUT' => $client->put($fullUrl, $params),
-                    default => $client->get($fullUrl, $params),
+                    'GET' => Http::withOptions($options)->get($url, array_merge($this->credentials, $params)),
+                    'POST' => Http::withOptions($options)->post($url, array_merge($this->credentials, $params)),
+                    'PUT' => Http::withOptions($options)->put($url, array_merge($this->credentials, $params)),
+                    'DELETE' => Http::withOptions($options)->delete($url, array_merge($this->credentials, $params)),
+                    default => throw new \InvalidArgumentException("Unsupported HTTP method: {$method}")
                 };
 
                 if ($response->successful()) {
-                    return $response->json() ?? [];
+                    return $response->json() ?: [];
                 }
 
-                if ($response->status() === 401 || $response->status() === 403) {
-                    throw new AuthenticationException('Invalid API Key or Secret. Please check permissions.');
-                }
-                
-                // Handle 500-level errors (server errors) with more retries
-                if ($response->status() >= 500) {
-                    if ($attempt < $maxRetries) {
-                        $backoffTime = $retryDelay * $attempt; // Progressive backoff
-                        Log::warning("Server error {$response->status()} on attempt {$attempt}/{$maxRetries}. Retrying in {$backoffTime} seconds...");
-                        sleep($backoffTime);
-                        continue;
-                    }
-                }
-
-                throw new \Exception("API request failed with status code {$response->status()} | Body: " . $response->body());
-
-            } catch (ConnectionException $e) {
-                // Only retry on connection errors with progressive backoff
-                if ($attempt < $maxRetries) {
-                    $backoffTime = $retryDelay * $attempt; // Progressive backoff
-                    Log::warning("Connection failed on attempt {$attempt}/{$maxRetries}. Retrying in {$backoffTime} seconds...");
-                    sleep($backoffTime);
+                // Special handling for common API errors
+                if ($response->status() === 429) {
+                    // Too Many Requests - implement exponential backoff
+                    $retryAfter = $response->header('Retry-After') ?: pow(2, $attempt) * $retryDelay;
+                    Log::warning("Rate limit exceeded. Waiting {$retryAfter} seconds before retry.", [
+                        'endpoint' => $endpoint,
+                        'attempt' => $attempt + 1,
+                        'max_retries' => $maxRetries
+                    ]);
+                    sleep((int)$retryAfter);
+                    $attempt++;
                     continue;
                 }
-                throw new \Exception("Could not connect to the website URL. Please check the URL and your server's connectivity.");
-            } catch (\Exception $e) {
-                // Check for MySQL-related errors in the message
-                if (stripos($e->getMessage(), 'mysql') !== false || 
-                    stripos($e->getMessage(), 'database') !== false ||
-                    stripos($e->getMessage(), 'deadlock') !== false ||
-                    stripos($e->getMessage(), 'timeout') !== false) {
-                    
-                    if ($attempt < $maxRetries) {
-                        $backoffTime = $retryDelay * $attempt * 2; // Even longer backoff for DB issues
-                        Log::warning("Database error detected on attempt {$attempt}/{$maxRetries}. Retrying in {$backoffTime} seconds...");
-                        sleep($backoffTime);
-                        continue;
-                    }
+
+                if ($response->status() === 503) {
+                    // Service Unavailable - implement exponential backoff
+                    $waitTime = pow(2, $attempt) * $retryDelay;
+                    Log::warning("Service unavailable. Waiting {$waitTime} seconds before retry.", [
+                        'endpoint' => $endpoint,
+                        'attempt' => $attempt + 1,
+                        'max_retries' => $maxRetries
+                    ]);
+                    sleep($waitTime);
+                    $attempt++;
+                    continue;
                 }
-                
-                Log::error("WooCommerce API Client Error: " . $e->getMessage());
-                throw $e;
+
+                // For 4xx errors (except 429), don't retry as they are client errors
+                if ($response->status() >= 400 && $response->status() < 500 && $response->status() !== 429) {
+                    $errorData = $response->json() ?: [];
+                    $message = $errorData['message'] ?? "HTTP Error {$response->status()}";
+                    Log::error("WooCommerce API client error: {$message}", [
+                        'status' => $response->status(),
+                        'response' => $errorData,
+                        'endpoint' => $endpoint,
+                        'method' => $method
+                    ]);
+                    throw new \Exception("WooCommerce API error: {$message}");
+                }
+
+                // For other errors, retry with exponential backoff
+                $waitTime = pow(2, $attempt) * $retryDelay;
+                Log::warning("API request failed with status {$response->status()}. Retrying in {$waitTime} seconds.", [
+                    'endpoint' => $endpoint,
+                    'attempt' => $attempt + 1,
+                    'max_retries' => $maxRetries
+                ]);
+                sleep($waitTime);
+
+            } catch (ConnectionException $e) {
+                $waitTime = pow(2, $attempt) * $retryDelay;
+                Log::warning("Connection error to WooCommerce API. Retrying in {$waitTime} seconds: {$e->getMessage()}", [
+                    'endpoint' => $endpoint,
+                    'attempt' => $attempt + 1,
+                    'max_retries' => $maxRetries
+                ]);
+                sleep($waitTime);
+                $lastException = $e;
+            } catch (\Exception $e) {
+                if (str_contains($e->getMessage(), 'cURL error 28')) {
+                    // Timeout error - retry with longer timeout
+                    $options['timeout'] += 60; // Add 1 minute to timeout
+                    Log::warning("Timeout occurred. Increasing timeout to {$options['timeout']} seconds and retrying.", [
+                        'endpoint' => $endpoint,
+                        'attempt' => $attempt + 1,
+                        'max_retries' => $maxRetries
+                    ]);
+                    sleep($retryDelay);
+                    $lastException = $e;
+                } else {
+                    // For other exceptions, log and throw
+                    Log::error("WooCommerce API request failed: {$e->getMessage()}", [
+                        'exception' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
+                        'endpoint' => $endpoint,
+                        'method' => $method
+                    ]);
+                    throw $e;
+                }
             }
+
+            $attempt++;
         }
-        
-        // This line should never be reached because the last retry will either return or throw
-        throw new \Exception("Maximum retry attempts reached without success");
+
+        // If we've exhausted all retries
+        $errorMessage = $lastException ? $lastException->getMessage() : "Maximum retries exceeded";
+        Log::error("Failed to connect to WooCommerce API after {$maxRetries} attempts: {$errorMessage}");
+        throw new \Exception("Could not connect to the website URL. Please check the URL and your server's connectivity.");
+    }
+    
+    /**
+     * Get the website ID for rate limiting
+     */
+    protected function getWebsiteId(): string
+    {
+        // Extract domain from URL to use as identifier
+        $domain = parse_url($this->baseUrl, PHP_URL_HOST) ?? 'unknown';
+        return md5($domain); // Hash the domain to create a consistent ID
     }
 }

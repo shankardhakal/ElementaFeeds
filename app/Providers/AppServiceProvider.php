@@ -36,13 +36,21 @@ class AppServiceProvider extends ServiceProvider
 
             // If the connection exists, we throttle by the website ID with more conservative limits
             if ($connection) {
-                // Allow only 1 job per minute per website
-                // This ensures we don't overwhelm the destination site
-                return Limit::perMinute(1)->by($connection->website_id);
+                // Even more conservative rate limiting - 1 job per 2 minutes per website
+                // This gives more breathing room for the destination database
+                return Limit::perMinutes(2, 1)->by($connection->website_id);
             }
 
             // As a fallback, limit by the job's unique ID to prevent errors.
-            return Limit::perMinute(1)->by($job->uniqueId());
+            return Limit::perMinutes(2, 1)->by($job->uniqueId());
+        });
+        
+        // Add another rate limiter specifically for API batch operations
+        // This will be used by WooCommerceApiClient to limit API calls
+        RateLimiter::for('woocommerce-api', function (string $websiteId) {
+            // Allow only 5 batch operations every 5 minutes for a given website
+            // This is very conservative and helps prevent database overload
+            return Limit::perMinutes(5, 5)->by('woocommerce-api:' . $websiteId);
         });
 
         Blade::anonymousComponentPath(resource_path('views/backpack/custom/components'));

@@ -41,6 +41,21 @@ class HandleImportCompletionJob implements ShouldQueue
             $importRun->status = 'completed';
             $importRun->finished_at = now();
             $importRun->save();
+            
+            // Schedule the ReconcileProductStatusJob to run after import completion
+            // This will attempt to publish any products left in draft status
+            try {
+                // Find the connection ID from the import run
+                $feedWebsiteId = $importRun->feed_website_id;
+                
+                // Add a delay before running reconciliation to let the system stabilize
+                ReconcileProductStatusJob::dispatch($this->importRunId, $feedWebsiteId)
+                    ->delay(now()->addMinutes(5));
+                
+                Log::info("Scheduled ReconcileProductStatusJob for ImportRun #{$this->importRunId} to run in 5 minutes");
+            } catch (\Exception $e) {
+                Log::error("Failed to schedule ReconcileProductStatusJob for ImportRun #{$this->importRunId}: " . $e->getMessage());
+            }
         }
 
         $this->cleanupChunks($this->importRunId);
