@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Crypt;
 use Backpack\CRUD\app\Models\Traits\CrudTrait;
 use Illuminate\Contracts\Encryption\DecryptException;
+use Illuminate\Support\Facades\Log;
+use App\Jobs\TestApiConnectionJob;
 
 class Website extends Model
 {
@@ -102,5 +104,16 @@ class Website extends Model
                 'schedule',
                 'last_run_at'
             )->withTimestamps();
+    }
+
+    protected static function booted()
+    {
+        static::updated(function (Website $website) {
+            // If the URL or credentials have changed, dispatch a job to test the connection.
+            if ($website->isDirty('url') || $website->isDirty('woocommerce_credentials') || $website->isDirty('wordpress_credentials')) {
+                Log::info("Website #{$website->id} credentials updated. Dispatching connection test.");
+                TestApiConnectionJob::dispatch($website->id);
+            }
+        });
     }
 }

@@ -1,7 +1,6 @@
 <?php
 
 return [
-
     /*
     |--------------------------------------------------------------------------
     | Default Queue Connection Name
@@ -29,7 +28,6 @@ return [
     */
 
     'connections' => [
-
         'sync' => [
             'driver' => 'sync',
         ],
@@ -71,8 +69,36 @@ return [
             'block_for' => null,
             'after_commit' => false,
         ],
-
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Worker Memory Optimization Settings
+    |--------------------------------------------------------------------------
+    |
+    | These settings control how queue workers manage memory to prevent leaks
+    | and improve stability under high load conditions.
+    |
+    */
+
+    'worker_sleep_seconds' => (int) env('QUEUE_WORKER_SLEEP_SECONDS', 3),
+
+    'memory_optimization' => [
+        'enabled' => true,
+        'force_gc_threshold' => (int) env('QUEUE_MEMORY_GC_THRESHOLD', 120), // MB
+        'warning_threshold' => (int) env('QUEUE_MEMORY_WARNING_THRESHOLD', 150), // MB
+    ],
+
+    'worker_configuration' => [
+        'max_jobs' => (int) env('QUEUE_WORKER_MAX_JOBS', 500), // Maximum jobs before restart
+        'max_time' => (int) env('QUEUE_WORKER_MAX_TIME', 3600), // Maximum lifetime in seconds
+        'max_memory' => (int) env('QUEUE_WORKER_MAX_MEMORY', 150), // Maximum memory in MB
+        'sleep' => (int) env('QUEUE_WORKER_SLEEP', 3), // Sleep seconds between jobs
+        'timeout' => (int) env('QUEUE_WORKER_TIMEOUT', 60), // Job timeout in seconds
+        'tries' => (int) env('QUEUE_WORKER_TRIES', 3), // Default job retry count
+    ],
+    
+
 
     /*
     |--------------------------------------------------------------------------
@@ -108,5 +134,4 @@ return [
         'database' => env('DB_CONNECTION', 'sqlite'),
         'table' => 'failed_jobs',
     ],
-
 ];

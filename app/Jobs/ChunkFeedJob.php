@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use League\Csv\Reader;
 use Throwable;
+use App\Jobs\CleanupImportRunChunksJob; // Add this line
 
 class ChunkFeedJob implements ShouldQueue
 {
@@ -62,7 +63,7 @@ class ChunkFeedJob implements ShouldQueue
             if (empty($chunkFiles)) {
                 $importRun->update(['status' => 'failed', 'finished_at' => now(), 'log_messages' => 'No chunk files were created. The source feed might be empty or invalid.']);
                 Log::error("No chunk files created for import run #{$importRun->id}.");
-                $this->cleanupChunks($importRun->id); // Clean up even if there are no chunks.
+                CleanupImportRunChunksJob::dispatch($importRun->id); // Use the job
                 return;
             }
 
@@ -71,16 +72,19 @@ class ChunkFeedJob implements ShouldQueue
                 return new ProcessChunkJob($this->importRunId, $this->feedWebsiteConnectionId, $chunkFilePath);
             })->all();
 
-            // Create the batch and get its ID without using any closures
-            $pendingBatch = Bus::batch($jobs)
-                ->name("Import Run #{$this->importRunId} for Connection #{$connection->id}");
-            
-            // Store the batch ID in the import run
-            $batch = $pendingBatch->dispatch();
-            $importRun->update(['batch_id' => $batch->id, 'status' => 'processing']);
-            
-            // Add an additional job to the queue that will check the batch status and handle completion/failure
-            FinalizeImportJob::dispatch($this->importRunId)->delay(now()->addMinutes(5));
+            $batch = Bus::batch($jobs)->then(function (Batch $batch) use ($importRun) {
+                // All jobs completed successfully...
+                Log::info("Batch {$batch->id} completed successfully for import run #{$importRun->id}. Dispatching completion job.");
+                HandleImportCompletionJob::dispatch($importRun->id);
+            })->catch(function (Batch $batch, Throwable $e) use ($importRun) {
+                // A job within the batch failed...
+                Log::error("Batch {$batch->id} failed for import run #{$importRun->id}. Dispatching failure job. Error: {$e->getMessage()}");
+                HandleImportFailureJob::dispatch($importRun->id, $e->getMessage());
+            })->finally(function (Batch $batch) use ($importRun) {
+                // The batch has finished executing, successful or not. Clean up chunks.
+                Log::info("Batch {$batch->id} finished for import run #{$importRun->id}. Cleaning up chunk files.");
+                CleanupImportRunChunksJob::dispatch($importRun->id); // Use the job
+            })->name("Import Run #{$importRun->id} for Connection #{$connection->id}")->dispatch();
 
             $importRun->update(['batch_id' => $batch->id, 'status' => 'processing']);
             Log::info("Dispatched ProcessChunkJob batch {$batch->id} for import run #{$importRun->id}.");
@@ -88,7 +92,7 @@ class ChunkFeedJob implements ShouldQueue
         } catch (\Exception $e) {
             Log::error("ChunkFeedJob failed for import run #{$importRun->id}: " . $e->getMessage());
             $importRun->update(['status' => 'failed', 'finished_at' => now(), 'log_messages' => $e->getMessage()]);
-            $this->cleanupChunks($importRun->id);
+            CleanupImportRunChunksJob::dispatch($importRun->id); // Use the job
         }
     }
 
@@ -119,14 +123,5 @@ class ChunkFeedJob implements ShouldQueue
             $chunkIndex++;
         }
         return $chunkFiles;
-    }
-
-    protected function cleanupChunks(int $importRunId): void
-    {
-        $chunkDirectory = storage_path("app/import_chunks/{$importRunId}");
-        if (File::isDirectory($chunkDirectory)) {
-            File::deleteDirectory($chunkDirectory);
-            Log::info("Cleaned up chunk directory for ImportRun #{$importRunId}.");
-        }
     }
 }

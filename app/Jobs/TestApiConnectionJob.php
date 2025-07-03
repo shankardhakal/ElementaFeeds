@@ -24,8 +24,11 @@ class TestApiConnectionJob implements ShouldQueue, ShouldBeUnique
      */
     public int $uniqueFor = 300; // 5 minutes
 
-    public function __construct(public Website $website)
+    protected int $websiteId;
+
+    public function __construct(int $websiteId)
     {
+        $this->websiteId = $websiteId;
     }
 
     /**
@@ -33,17 +36,23 @@ class TestApiConnectionJob implements ShouldQueue, ShouldBeUnique
      */
     public function uniqueId(): string
     {
-        return $this->website->id;
+        return (string)$this->websiteId;
     }
 
     public function handle(): void
     {
-        Log::info("Starting API connection test for Website #{$this->website->id} ({$this->website->name}).");
+        $website = Website::find($this->websiteId);
+        if (!$website) {
+            Log::error("TestApiConnectionJob: Could not find Website with ID #{$this->websiteId}");
+            return;
+        }
+
+        Log::info("Starting API connection test for Website #{$website->id} ({$website->name}).");
 
         try {
-            $apiClient = ($this->website->platform === 'woocommerce')
-                ? new WooCommerceApiClient($this->website)
-                : new WordPressApiClient($this->website);
+            $apiClient = ($website->platform === 'woocommerce')
+                ? new WooCommerceApiClient($website)
+                : new WordPressApiClient($website);
             
             Log::info("Testing with client: " . get_class($apiClient));
             
@@ -51,16 +60,16 @@ class TestApiConnectionJob implements ShouldQueue, ShouldBeUnique
             $apiClient->getCategories();
 
             // This line will only be reached if no exception was thrown.
-            $this->website->connection_status = 'ok';
-            Log::info("API test SUCCESS for Website #{$this->website->id}.");
+            $website->connection_status = 'ok';
+            Log::info("API test SUCCESS for Website #{$website->id}.");
 
         } catch (\Exception $e) {
             // The catch block will now receive meaningful error messages.
-            $this->website->connection_status = 'failed';
-            Log::error("API test FAILED for Website #{$this->website->id}: " . $e->getMessage());
+            $website->connection_status = 'failed';
+            Log::error("API test FAILED for Website #{$website->id}: " . $e->getMessage());
         }
         
-        $this->website->last_checked_at = now();
-        $this->website->saveQuietly();
+        $website->last_checked_at = now();
+        $website->saveQuietly();
     }
 }

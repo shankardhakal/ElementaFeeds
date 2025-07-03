@@ -35,4 +35,8 @@ Route::group([
     Route::post('connection/create-step-4', 'ConnectionController@storeStep4')->name('connection.store.step4');
     Route::post('connection/parse-categories', 'ConnectionController@parseCategories')->name('connection.parse_categories');
     Route::post('connection/{id}/run', 'ConnectionController@runNow')->name('connection.run');
+
+    // --- Settings Routes ---
+    Route::get('setting', 'App\Http\Controllers\Admin\SettingController@index')->name('backpack.setting.index');
+    Route::post('setting', 'App\Http\Controllers\Admin\SettingController@update')->name('backpack.setting.update');
 });

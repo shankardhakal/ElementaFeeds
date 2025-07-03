@@ -14,6 +14,6 @@ class WebsiteObserver
     public function saved(Website $website): void
     {
         // Dispatch the job to test the API connection in the background.
-        TestApiConnectionJob::dispatch($website);
+        TestApiConnectionJob::dispatch($website->id);
     }
 }

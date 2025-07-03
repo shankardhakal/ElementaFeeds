@@ -15,15 +15,16 @@ use Illuminate\Queue\Middleware\RateLimited;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
 {
     use InteractsWithQueue, Queueable, SerializesModels, Batchable;
     
-    public int $timeout = 900; // 15 minutes
+    public int $timeout = 1200; // 20 minutes (increased from 15)
     public int $tries = 5;
-    public int $backoff = 60; // Wait 60 seconds between retry attempts
+    public int $backoff = 120; // Wait 2 minutes between retry attempts (doubled from 60)
 
     /**
      * The number of seconds after which the job's unique lock will be released.
@@ -133,12 +134,23 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                 return; // No valid products to import
             }
     
+            // Get the recommended batch size for this website
+            $batchSize = $this->getRecommendedBatchSize($connection->website_id);
+            Log::info("Using batch size of {$batchSize} for website ID {$connection->website_id}");
+            
             // 2. Process in batches to respect API limits and reduce server load.
-            $batches = array_chunk($draftsToCreate, 50); // Reduce batch size from 100 to 50 for more reliability
+            $batches = array_chunk($draftsToCreate, $batchSize);
     
             foreach ($batches as $batchIndex => $batch) {
                 try {
                     Log::info("Sending batch #{$batchIndex} with " . count($batch) . " products to WooCommerce API for ImportRun #{$this->importRunId}");
+                    
+                    // Add a delay between batches
+                    if ($batchIndex > 0) {
+                        $delaySeconds = min(10, 2 + $batchIndex); // Progressive delay up to 10 seconds
+                        Log::info("Waiting {$delaySeconds} seconds before processing next batch");
+                        sleep($delaySeconds);
+                    }
                     
                     // PHASE 1: Create products as drafts
                     $draftBatch = $batch;
@@ -152,12 +164,20 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                     if (empty($createdProducts)) {
                         Log::error("Failed to create any products in batch #{$batchIndex} for ImportRun #{$this->importRunId}");
                         $importRun->increment('failed_records', count($batch));
+                        
+                        // If this is a total failure, reduce the batch size for future jobs
+                        $this->reduceRecommendedBatchSize($connection->website_id);
                         continue; // Skip to the next batch
                     }
                     
                     // Count successful creations
                     $createdCount = count($createdProducts);
                     $importRun->increment('created_records', $createdCount);
+                    
+                    // If partial success (some products failed), reduce batch size
+                    if ($createdCount < count($batch)) {
+                        $this->reduceRecommendedBatchSize($connection->website_id);
+                    }
                     
                     Log::info("Successfully created {$createdCount} draft products for ImportRun #{$this->importRunId}");
                     
@@ -173,19 +193,33 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                     }
                     
                     // Split updates into smaller batches to reduce server load
-                    $updateBatches = array_chunk($productUpdates, 25); // Smaller batches for publishing
+                    $publishBatchSize = max(5, (int)($batchSize * 0.5)); // Half the create batch size, but minimum 5
+                    $updateBatches = array_chunk($productUpdates, $publishBatchSize);
                     
                     foreach ($updateBatches as $updateIndex => $updateBatch) {
                         try {
                             // Add a short delay between update batches to give the server breathing room
                             if ($updateIndex > 0) {
-                                sleep(2); // 2-second delay between update batches
+                                $delaySeconds = min(15, 5 + $updateIndex); // Progressive delay up to 15 seconds
+                                Log::info("Waiting {$delaySeconds} seconds before publishing next batch");
+                                sleep($delaySeconds);
                             }
                             
                             $updateResponse = $apiClient->batchProducts(['update' => $updateBatch]);
                             $updatedProducts = $updateResponse['update'] ?? [];
                             
                             $updatedCount = count($updatedProducts);
+                            
+                            // If we couldn't publish some products, record them for later reconciliation
+                            if ($updatedCount < count($updateBatch)) {
+                                $publishedIds = array_column($updatedProducts, 'id');
+                                $notPublishedIds = array_diff(array_column($updateBatch, 'id'), $publishedIds);
+                                
+                                if (!empty($notPublishedIds)) {
+                                    $this->recordDraftProductsForReconciliation($importRun->id, $notPublishedIds);
+                                }
+                            }
+                            
                             Log::info("Successfully published {$updatedCount} products in update batch #{$updateIndex} for ImportRun #{$this->importRunId}");
                             
                         } catch (\Throwable $updateError) {
@@ -195,6 +229,9 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                                 'batch_index' => $updateIndex,
                                 'batch_size' => count($updateBatch)
                             ]);
+                            
+                            // Record these products for later reconciliation
+                            $this->recordDraftProductsForReconciliation($importRun->id, array_column($updateBatch, 'id'));
                         }
                     }
                     
@@ -205,6 +242,22 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                         'batch_size' => count($batch)
                     ]);
                     $importRun->increment('failed_records', count($batch));
+                    
+                    // If we get consistent failures, reduce batch size for future attempts
+                    $this->reduceRecommendedBatchSize($connection->website_id);
+                    
+                    // If we get a connection or auth error, we should fail the entire job.
+                    if ($e instanceof \Illuminate\Http\Client\ConnectionException || $e instanceof \Illuminate\Auth\AuthenticationException) {
+                        Log::critical("Fatal API error for ImportRun #{$this->importRunId}. Cancelling batch.", ['exception' => $e]);
+                        if ($this->batch()) {
+                            $this->batch()->cancel();
+                        }
+                        $this->fail($e); // Fail the job and stop processing
+                        return; 
+                    }
+                    
+                    // For other errors, we log, increment failure count, and continue to the next batch.
+                    continue;
                 }
             }
     
@@ -222,6 +275,65 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
             
             // Re-throw the exception to allow Laravel's retry mechanism to work
             throw $e;
+        }
+    }
+
+    /**
+     * Record product IDs that couldn't be published for later reconciliation
+     */
+    protected function recordDraftProductsForReconciliation(int $importRunId, array $productIds): void
+    {
+        if (empty($productIds)) {
+            return;
+        }
+        
+        try {
+            // Use a cache key that includes the import run ID
+            $cacheKey = "draft_products:{$importRunId}";
+            
+            // Get existing draft products, if any
+            $existingDrafts = Cache::get($cacheKey, []);
+            
+            // Add the new draft products
+            $allDrafts = array_unique(array_merge($existingDrafts, $productIds));
+            
+            // Store back in cache with a 24-hour expiration
+            Cache::put($cacheKey, $allDrafts, 60 * 24);
+            
+            // Update the import run record
+            ImportRun::where('id', $importRunId)->increment('draft_records', count($productIds));
+            
+            Log::info("Recorded " . count($productIds) . " draft products for later reconciliation (Import Run #{$importRunId})");
+        } catch (\Throwable $e) {
+            Log::error("Failed to record draft products for reconciliation: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Get the recommended batch size for a specific website
+     */
+    protected function getRecommendedBatchSize(int $websiteId): int
+    {
+        $cacheKey = "batch_size:website:{$websiteId}";
+        $batchSize = Cache::get($cacheKey, 30); // Default to 30 (up from 25)
+        
+        return $batchSize;
+    }
+    
+    /**
+     * Reduce the recommended batch size for a website due to errors
+     */
+    protected function reduceRecommendedBatchSize(int $websiteId): void
+    {
+        $cacheKey = "batch_size:website:{$websiteId}";
+        $currentSize = Cache::get($cacheKey, 30);
+        
+        // Reduce by 25% but never below 5
+        $newSize = max(5, (int)($currentSize * 0.75));
+        
+        if ($newSize < $currentSize) {
+            Cache::put($cacheKey, $newSize, 60 * 24); // Store for 24 hours
+            Log::warning("Reduced recommended batch size for website #{$websiteId} from {$currentSize} to {$newSize} due to errors");
         }
     }
 
@@ -261,7 +373,7 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
         $data = json_decode($json, true);
 
         if (!$data) {
-            $this->logError(null, "Failed to decode products from chunk file: {$chunkFilePath}. Error: " . json_last_error_msg());
+            $this->logError(null, "Failed to decode products from chunk file: {$filePath}. Error: " . json_last_error_msg());
             return [];
         }
 

@@ -9,9 +9,11 @@
         "php": "^8.2",
         "backpack/crud": "^6.8",
         "backpack/theme-coreuiv4": "^1.1",
+        "backpack/theme-tabler": "^1.2",
         "laravel/framework": "^12.0",
         "laravel/tinker": "^2.10.1",
-        "league/csv": "^9.24"
+        "league/csv": "^9.24",
+        "predis/predis": "^3.0"
     },
     "require-dev": {
         "backpack/generators": "^4.0",

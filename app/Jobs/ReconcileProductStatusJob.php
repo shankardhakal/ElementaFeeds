@@ -12,6 +12,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 class ReconcileProductStatusJob implements ShouldQueue
@@ -54,26 +55,48 @@ class ReconcileProductStatusJob implements ShouldQueue
             $connection = FeedWebsite::findOrFail($this->connectionId);
             $apiClient = new WooCommerceApiClient($connection->website);
             
-            // If no specific draft product IDs were provided, fetch all draft products from the import run
+            // Check if we have cached draft product IDs for this import run
+            $cacheKey = "draft_products:{$this->importRunId}";
+            $cachedDraftIds = Cache::get($cacheKey, []);
+            
+            if (!empty($cachedDraftIds)) {
+                Log::info("Found " . count($cachedDraftIds) . " cached draft products to reconcile for ImportRun #{$this->importRunId}");
+                $this->draftProductIds = array_merge($this->draftProductIds, $cachedDraftIds);
+                
+                // Clear the cache since we're processing these now
+                Cache::forget($cacheKey);
+            }
+            
+            // If no specific draft product IDs were provided or found in cache, fetch from WooCommerce
             if (empty($this->draftProductIds)) {
                 Log::info("Fetching draft products for ImportRun #{$this->importRunId}");
                 
                 // Fetch draft products from WooCommerce
-                // We can filter by specific criteria related to our import run, such as a tag or meta field
                 $draftProducts = $this->fetchDraftProducts($apiClient, $importRun);
                 
                 if (empty($draftProducts)) {
                     Log::info("No draft products found for ImportRun #{$this->importRunId}");
+                    
+                    // Update the import run with reconciliation results
+                    $importRun->update([
+                        'reconciled_at' => now(),
+                        'reconciled_records' => 0
+                    ]);
+                    
                     return;
                 }
                 
                 $this->draftProductIds = array_column($draftProducts, 'id');
             }
             
-            Log::info("Reconciling " . count($this->draftProductIds) . " draft products for ImportRun #{$this->importRunId}");
+            $draftCount = count($this->draftProductIds);
+            Log::info("Reconciling {$draftCount} draft products for ImportRun #{$this->importRunId}");
             
-            // Process in batches of 25 for better reliability
-            $batches = array_chunk($this->draftProductIds, 25);
+            // Get the recommended batch size - use a more conservative size for reconciliation
+            $batchSize = $this->getRecommendedBatchSize($connection->website_id);
+            
+            // Process in small batches for better reliability
+            $batches = array_chunk($this->draftProductIds, $batchSize);
             
             $successCount = 0;
             $failureCount = 0;
@@ -82,6 +105,13 @@ class ReconcileProductStatusJob implements ShouldQueue
                 Log::info("Processing reconciliation batch #{$batchIndex} with " . count($batch) . " products");
                 
                 try {
+                    // Add a longer delay between batches for reconciliation to be extra cautious
+                    if ($batchIndex > 0) {
+                        $delaySeconds = min(30, 10 + $batchIndex * 5); // Progressive delay up to 30 seconds
+                        Log::info("Waiting {$delaySeconds} seconds before processing next reconciliation batch");
+                        sleep($delaySeconds);
+                    }
+                    
                     // Create the batch update payload
                     $updateBatch = [];
                     foreach ($batch as $productId) {
@@ -93,16 +123,22 @@ class ReconcileProductStatusJob implements ShouldQueue
                     
                     // Try to publish the products
                     $response = $apiClient->batchProducts(['update' => $updateBatch]);
-                    $successCount += count($response['update'] ?? []);
+                    $updatedProducts = $response['update'] ?? [];
+                    $successCount += count($updatedProducts);
                     
                     // Check for failed updates
-                    if (isset($response['update']) && count($response['update']) < count($batch)) {
+                    if (count($updatedProducts) < count($batch)) {
                         // Some updates failed - find which ones
-                        $updatedIds = array_column($response['update'], 'id');
+                        $updatedIds = array_column($updatedProducts, 'id');
                         $failedIds = array_diff($batch, $updatedIds);
                         
                         Log::warning("Failed to publish " . count($failedIds) . " products in reconciliation batch #{$batchIndex}");
                         $failureCount += count($failedIds);
+                        
+                        // Reduce batch size for future reconciliation attempts
+                        if (count($failedIds) > 0) {
+                            $this->reduceRecommendedBatchSize($connection->website_id);
+                        }
                         
                         // For products that consistently fail, consider deleting them
                         if ($this->attempts() >= 2) {
@@ -110,14 +146,12 @@ class ReconcileProductStatusJob implements ShouldQueue
                         }
                     }
                     
-                    // Add a delay between batches to reduce server load
-                    if ($batchIndex < count($batches) - 1) {
-                        sleep(5);
-                    }
-                    
                 } catch (Throwable $e) {
                     Log::error("Error reconciling batch #{$batchIndex}: " . $e->getMessage());
                     $failureCount += count($batch);
+                    
+                    // Reduce batch size due to error
+                    $this->reduceRecommendedBatchSize($connection->website_id);
                     
                     // For the last retry attempt, clean up products that we can't publish
                     if ($this->attempts() >= $this->tries) {
@@ -128,7 +162,10 @@ class ReconcileProductStatusJob implements ShouldQueue
             
             // Update the import run with reconciliation results
             $importRun->update([
-                'log_messages' => DB::raw("CONCAT(IFNULL(log_messages, ''), '\nReconciliation completed: {$successCount} products published, {$failureCount} failed.')")
+                'reconciled_at' => now(),
+                'reconciled_records' => $successCount,
+                'removed_records' => DB::raw('removed_records + ' . $failureCount),
+                'log_messages' => DB::raw("CONCAT(IFNULL(log_messages, ''), '\nReconciliation completed: {$successCount} products published, {$failureCount} failed/removed.')")
             ]);
             
             Log::info("ReconcileProductStatusJob completed for ImportRun #{$this->importRunId}: {$successCount} products published, {$failureCount} failed");
@@ -136,6 +173,36 @@ class ReconcileProductStatusJob implements ShouldQueue
         } catch (Throwable $e) {
             Log::error("ReconcileProductStatusJob failed for ImportRun #{$this->importRunId}: " . $e->getMessage());
             throw $e;
+        }
+    }
+    
+    /**
+     * Get the recommended batch size for a specific website
+     */
+    protected function getRecommendedBatchSize(int $websiteId): int
+    {
+        $cacheKey = "batch_size:website:{$websiteId}";
+        // Use a more conservative batch size for reconciliation (about 40% of regular batch size)
+        $regularBatchSize = Cache::get($cacheKey, 25);
+        $reconciliationBatchSize = max(5, (int)($regularBatchSize * 0.4));
+        
+        return $reconciliationBatchSize;
+    }
+    
+    /**
+     * Reduce the recommended batch size for a website due to errors
+     */
+    protected function reduceRecommendedBatchSize(int $websiteId): void
+    {
+        $cacheKey = "batch_size:website:{$websiteId}";
+        $currentSize = Cache::get($cacheKey, 25);
+        
+        // Reduce by 30% but never below 5
+        $newSize = max(5, (int)($currentSize * 0.7));
+        
+        if ($newSize < $currentSize) {
+            Cache::put($cacheKey, $newSize, 60 * 24); // Store for 24 hours
+            Log::warning("Reduced recommended batch size for website #{$websiteId} from {$currentSize} to {$newSize} due to reconciliation errors");
         }
     }
     
@@ -175,13 +242,34 @@ class ReconcileProductStatusJob implements ShouldQueue
         Log::warning("Cleaning up " . count($productIds) . " failed products that couldn't be published");
         
         try {
-            // We can either set them to a special status (like 'private') or delete them
-            // Here we'll choose to delete them to keep the catalog clean
-            $apiClient->batchProducts(['delete' => $productIds]);
+            // Process deletion in small batches to avoid overwhelming the server
+            $batches = array_chunk($productIds, 10);
+            
+            $totalRemoved = 0;
+            
+            foreach ($batches as $index => $batch) {
+                try {
+                    // Add delay between batches
+                    if ($index > 0) {
+                        sleep(5);
+                    }
+                    
+                    // Delete the products
+                    $response = $apiClient->batchProducts(['delete' => $batch]);
+                    $deletedCount = count($response['delete'] ?? []);
+                    $totalRemoved += $deletedCount;
+                    
+                    Log::info("Deleted {$deletedCount} failed products in batch #{$index}");
+                    
+                } catch (Throwable $e) {
+                    Log::error("Error deleting batch #{$index} of failed products: " . $e->getMessage());
+                }
+            }
             
             // Update the import run with cleanup information
             $importRun->update([
-                'log_messages' => DB::raw("CONCAT(IFNULL(log_messages, ''), '\nRemoved " . count($productIds) . " products that could not be published.')")
+                'removed_records' => DB::raw('removed_records + ' . $totalRemoved),
+                'log_messages' => DB::raw("CONCAT(IFNULL(log_messages, ''), '\nRemoved {$totalRemoved} products that could not be published.')")
             ]);
             
         } catch (Throwable $e) {

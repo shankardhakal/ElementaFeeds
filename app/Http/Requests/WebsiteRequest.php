@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class WebsiteRequest extends FormRequest
 {
@@ -24,8 +25,16 @@ class WebsiteRequest extends FormRequest
      */
     public function rules()
     {
+        $id = $this->id;
+
         return [
-            // 'name' => 'required|min:5|max:255'
+            'name' => 'required|min:3|max:255',
+            'url' => [
+                'required',
+                'url',
+                Rule::unique('websites', 'url')->ignore($id)
+            ],
+            'platform' => 'required',
         ];
     }
 
@@ -49,7 +58,7 @@ class WebsiteRequest extends FormRequest
     public function messages()
     {
         return [
-            //
+            'url.unique' => 'A website with this URL already exists.',
         ];
     }
 }
