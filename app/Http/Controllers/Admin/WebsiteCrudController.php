@@ -38,24 +38,8 @@ class WebsiteCrudController extends CrudController
         CRUD::addColumn([
             'name'  => 'connection_status',
             'label' => 'Status',
-            'type'  => 'custom_html',
-            'value' => function($entry) {
-                $status = $entry->connection_status ?? 'untested';
-                $color = 'secondary';
-                $text = 'Untested';
-
-                if ($status === 'ok') {
-                    $color = 'success';
-                    $text = 'Connected';
-                } elseif ($status === 'failed') {
-                    $color = 'danger';
-                    $text = 'Failed';
-                }
-                
-                $lastChecked = $entry->last_checked_at ? $entry->last_checked_at->diffForHumans() : 'Never';
-
-                return "<div><span style='font-size: 1.2em; color: var(--{$color});'>●</span> {$text}</div><small>Checked: {$lastChecked}</small>";
-            }
+            'type'  => 'view',
+            'view'  => 'backpack.custom.columns.connection_status_with_info',
         ]);
     }
 

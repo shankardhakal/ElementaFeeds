@@ -21,6 +21,7 @@ class ImportRun extends Model
 
     protected $casts = [
         'log_messages' => 'array',
+        'error_records' => 'array',
     ];
 
     public function feedWebsite()

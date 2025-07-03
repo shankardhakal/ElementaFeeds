@@ -22,6 +22,17 @@ class TransformationService
         // --- Standard Field Mapping ---
         $this->mapStandardFields($payload, $rawProduct, $fieldMappings);
 
+        // --- Enforce Core Product Attributes ---
+        // Always create as an external product and start as a draft.
+        $payload['type'] = 'external';
+        $payload['status'] = 'draft';
+
+        // --- Validate Essential Fields ---
+        // An external product is useless without a URL and price.
+        if (empty($payload['product_url']) || empty($payload['regular_price'])) {
+            return []; // Return empty to skip this product. It will be logged as an error later.
+        }
+
         // --- Handle Special Cases & Data Cleaning ---
         $this->handlePrice($payload);
         $this->handleImages($payload);
@@ -30,14 +41,66 @@ class TransformationService
         $this->mapCategories($payload, $rawProduct, $fieldMappings, $categoryMappings);
 
         // --- Ensure button_text for external products ---
-        if (
-            (isset($payload['type']) && $payload['type'] === 'external') ||
-            (!empty($payload['product_url']))
-        ) {
-            $payload['button_text'] = 'Katso tuotetta';
+        // If not mapped, provide a sensible default.
+        if (empty($payload['button_text'])) {
+            $payload['button_text'] = 'View Product';
         }
 
         return $payload;
+    }
+
+    /**
+     * This is a legacy method and will be removed. The new transform method handles all logic.
+     * @deprecated
+     */
+    public function transform_legacy(array $record, FeedWebsite $connection): array
+    {
+        // This method is no longer in use and is kept for reference during transition.
+        // It will be removed in a future cleanup.
+        $fieldMappings = $connection->field_mappings ?? [];
+        $transformed = [];
+
+        // 1. Basic Field Mapping
+        foreach ($fieldMappings as $destinationField => $sourceField) {
+            if (!empty($sourceField) && isset($record[$sourceField])) {
+                $transformed[$destinationField] = $record[$sourceField];
+            }
+        }
+
+        // 2. Set Product Type and Status
+        // Always create as an external product and start as a draft.
+        $transformed['type'] = 'external';
+        $transformed['status'] = 'draft';
+
+        // 3. Ensure required fields for an external product are present.
+        // If the product URL or button text weren't mapped, we can't create it.
+        if (empty($transformed['product_url']) || empty($transformed['button_text'])) {
+            // Returning an empty array will cause this product to be skipped.
+            return []; 
+        }
+
+        // 4. Handle Categories
+        $categoryMappings = $connection->category_mappings ?? [];
+        if (!empty($categoryMappings)) {
+            // This logic needs to be robust based on how source categories are provided.
+            // Assuming a simple 1-to-1 mapping for now.
+            // The structure for the API is an array of objects, e.g., [['id' => 123], ['id' => 456]]
+            $transformed['categories'] = array_map(function($id) {
+                return ['id' => $id];
+            }, array_values($categoryMappings));
+        }
+
+        // 5. Handle Images
+        // The API expects a specific format for images.
+        if (!empty($transformed['images'])) {
+            // Assuming 'images' is a comma-separated string of URLs.
+            $imageUrls = array_map('trim', explode(',', $transformed['images']));
+            $transformed['images'] = array_map(function($url) {
+                return ['src' => $url];
+            }, $imageUrls);
+        }
+
+        return $transformed;
     }
 
     private function mapStandardFields(array &$payload, array $rawProduct, array $fieldMappings): void

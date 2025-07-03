@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\FeedWebsite;
+use App\Models\ImportRun;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -35,20 +36,20 @@ class StartImportRunJob implements ShouldQueue
      */
     public function handle(): void
     {
-        // Use the renamed property throughout the handle method.
         Log::info("Starting import run for connection: {$this->feedWebsiteConnection->name} (#{$this->feedWebsiteConnection->id})");
 
         // Create a record in the `import_runs` table to track this specific execution.
         $importRun = $this->feedWebsiteConnection->importRuns()->create([
-            'status' => 'processing',
+            'status' => 'pending', // The run is pending until the first real work starts.
+            'error_records' => [], // Initialize error records as an empty JSON array
         ]);
-        
-        // Mark the connection's last run time.
+
         $this->feedWebsiteConnection->update(['last_run_at' => now()]);
 
-        // Dispatch the next job in our pipeline, passing it the newly created $importRun record.
-        DownloadAndChunkJob::dispatch($importRun);
+        // Dispatch the first job in the pipeline: DownloadFeedJob.
+        // We pass IDs instead of full models to prevent serialization issues.
+        DownloadFeedJob::dispatch($importRun->id, $this->feedWebsiteConnection->id);
 
-        Log::info("Successfully dispatched DownloadAndChunkJob for import run #{$importRun->id}.");
+        Log::info("Dispatched DownloadFeedJob for import run #{$importRun->id}");
     }
 }

@@ -46,26 +46,34 @@
                 <td>{{ $connection->feed->name ?? 'N/A' }}</td>
                 <td>{{ $connection->website->name ?? 'N/A' }}</td>
                 <td>
-                  @if ($connection->is_active)
-                    <span class="badge badge-success">Active</span>
-                  @else
-                    <span class="badge badge-secondary">Paused</span>
-                  @endif
-                </td>
-                <td>{{ $connection->last_run_at ? $connection->last_run_at->format('Y-m-d H:i') : 'Never' }}</td>
-                <td>
-                  @if ($connection->latestImportRun)
                     @php
-                      $status = $connection->latestImportRun->status;
-                      $badgeClass = 'secondary';
-                      if ($status === 'completed') $badgeClass = 'success';
-                      if ($status === 'failed') $badgeClass = 'danger';
-                      if ($status === 'processing') $badgeClass = 'info';
+                        $connectionStatusMap = [
+                            true => ['class' => 'bg-success', 'text' => 'Active'],
+                            false => ['class' => 'bg-secondary', 'text' => 'Paused'],
+                        ];
                     @endphp
-                    <span class="badge badge-{{ $badgeClass }}">{{ ucfirst($status) }}</span>
-                  @else
-                    <span class="badge badge-light">No Runs</span>
-                  @endif
+                    <x-status_badge 
+                        :status="$connection->is_active" 
+                        :statusMap="$connectionStatusMap" 
+                    />
+                </td>
+                <td>{{ $connection->latestImportRun?->created_at->format('Y-m-d H:i') ?? 'Never' }}</td>
+                <td>
+                    @if ($connection->latestImportRun)
+                        @php
+                            $runStatusMap = [
+                                'completed' => ['class' => 'bg-success', 'text' => 'Completed'],
+                                'failed' => ['class' => 'bg-danger', 'text' => 'Failed'],
+                                'processing' => ['class' => 'bg-info', 'text' => 'Processing'],
+                            ];
+                        @endphp
+                        <x-status_badge 
+                            :status="$connection->latestImportRun->status"
+                            :statusMap="$runStatusMap"
+                        />
+                    @else
+                        <x-status_badge status="no_runs" :statusMap="['no_runs' => ['class' => 'bg-light', 'text' => 'No Runs']]" />
+                    @endif
                 </td>
 
                 {{-- All action buttons must be inside the loop to access the $connection variable --}}

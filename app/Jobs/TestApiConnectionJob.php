@@ -11,13 +11,29 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 
-class TestApiConnectionJob implements ShouldQueue
+class TestApiConnectionJob implements ShouldQueue, ShouldBeUnique
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
+    /**
+     * The number of seconds after which the job's unique lock will be released.
+     *
+     * @var int
+     */
+    public int $uniqueFor = 300; // 5 minutes
+
     public function __construct(public Website $website)
     {
+    }
+
+    /**
+     * The unique ID for the job.
+     */
+    public function uniqueId(): string
+    {
+        return $this->website->id;
     }
 
     public function handle(): void
@@ -45,6 +61,6 @@ class TestApiConnectionJob implements ShouldQueue
         }
         
         $this->website->last_checked_at = now();
-        $this->website->save();
+        $this->website->saveQuietly();
     }
 }
