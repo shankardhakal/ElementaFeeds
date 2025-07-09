@@ -314,32 +314,16 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                     // Re-index the array after unsetting elements
                     $transformedPayloads = array_values($transformedPayloads);
 
-                    // Step 3: Fetch a map of existing product SKUs and their IDs from the destination site.
-                    $existingProductMap = $apiClient->getProductIdMapBySkus($skusToFetch);
-
-                    $draftsToCreate = [];
-                    $draftsToUpdate = [];
-                    
-                    // Step 4: Sort payloads into create and update batches.
-                    foreach ($transformedPayloads as $payload) {
-                        // Enhance payload with additional data.
-                        $payload['status'] = 'publish';
-                        $payload['catalog_visibility'] = 'visible';
-                        $payload['stock_status'] = $payload['stock_status'] ?? 'instock';
-                        $payload['meta_data'] = [
+                    // Step 3: Enhance all payloads with additional data.
+                    foreach ($transformedPayloads as $key => $payload) {
+                        $transformedPayloads[$key]['status'] = 'publish';
+                        $transformedPayloads[$key]['catalog_visibility'] = 'visible';
+                        $transformedPayloads[$key]['stock_status'] = $payload['stock_status'] ?? 'instock';
+                        $transformedPayloads[$key]['meta_data'] = [
                             ['key' => 'feed_name', 'value' => $connection->feed->name],
                             ['key' => 'import_run_id', 'value' => $this->importRunId],
                             ['key' => 'import_date', 'value' => date('Y-m-d H:i:s')]
                         ];
-
-                        // Check if product already exists using the pre-fetched map.
-                        if (isset($existingProductMap[$payload['sku']])) {
-                            // Product exists, add to update batch.
-                            $draftsToUpdate[] = array_merge(['id' => $existingProductMap[$payload['sku']]], $payload);
-                        } else {
-                            // New product, add to create batch.
-                            $draftsToCreate[] = $payload;
-                        }
                     }
 
                     $skippedCount = count($products) - count($transformedPayloads);
@@ -347,19 +331,13 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                         Log::info("Skipped {$skippedCount} products in chunk for ImportRun #{$this->importRunId} due to transformation or SKU generation issues.");
                     }
 
-                    if (empty($draftsToCreate) && empty($draftsToUpdate)) {
+                    if (empty($transformedPayloads)) {
                         Log::info("No products to create or update for ImportRun #{$this->importRunId}.");
                         return;
                     }
 
-                    // Process creation and updates separately
-                    if (!empty($draftsToCreate)) {
-                        $this->processProductCreation($draftsToCreate, $connection, $importRun);
-                    }
-
-                    if (!empty($draftsToUpdate)) {
-                        $this->processProductUpdates($draftsToUpdate, $connection, $importRun);
-                    }
+                    // Step 4: Use the new bulletproof upsert method
+                    $this->processProductUpsert($transformedPayloads, $connection, $importRun);
 
                 } catch (\Throwable $e) {
                     Log::error("ProcessChunkJob main try/catch error for ImportRun #{$this->importRunId}: " . $e->getMessage(), [
@@ -565,6 +543,11 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
      */
     protected function handleBatchCreationErrors(array $failedProducts, ImportRun $importRun)
     {
+        Log::info("handleBatchCreationErrors called", [
+            'import_run_id' => $importRun->id,
+            'failed_products_count' => count($failedProducts)
+        ]);
+        
         $errorMessages = [];
         
         foreach ($failedProducts as $index => $failedProduct) {
@@ -597,6 +580,12 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
         // Update failed count and error records
         $importRun->increment('failed_records', count($failedProducts));
         
+        Log::info("About to update error_records", [
+            'import_run_id' => $importRun->id,
+            'error_messages_count' => count($errorMessages),
+            'empty_check' => empty($errorMessages)
+        ]);
+        
         if (!empty($errorMessages)) {
             $existingErrors = $importRun->error_records ?? [];
             if (is_string($existingErrors)) {
@@ -604,7 +593,22 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
             }
             
             $updatedErrors = array_merge($existingErrors, $errorMessages);
+            
+            Log::info("Updating error_records", [
+                'import_run_id' => $importRun->id,
+                'existing_errors_count' => count($existingErrors),
+                'updated_errors_count' => count($updatedErrors)
+            ]);
+            
             $importRun->update(['error_records' => $updatedErrors]);
+            
+            // Verify the update worked
+            $importRun->refresh();
+            Log::info("After update - error_records", [
+                'import_run_id' => $importRun->id,
+                'error_records_count' => is_array($importRun->error_records) ? count($importRun->error_records) : 'not_array',
+                'error_records_type' => gettype($importRun->error_records)
+            ]);
         }
     }
 
@@ -881,5 +885,127 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
 
         // Should not reach here
         return ['success' => false, 'total_requested' => count($products), 'total_created' => 0, 'created' => [], 'error' => 'unknown_error'];
+    }
+
+    /**
+     * Process a batch of products using the bulletproof upsert method.
+     * This method handles both creation and updates automatically.
+     *
+     * @param array $products List of product payloads to upsert.
+     * @param FeedWebsite $connection Connection details for API client.
+     * @param ImportRun $importRun Current import run model.
+     */
+    protected function processProductUpsert(array $products, FeedWebsite $connection, ImportRun $importRun): void
+    {
+        $count = count($products);
+        Log::info("Attempting to upsert {$count} products for ImportRun #{$this->importRunId}");
+
+        try {
+            $apiClient = new WooCommerceApiClient($connection->website);
+            $response = $apiClient->upsertProducts($products);
+
+            Log::info("WooCommerce product upsert response", [
+                'success' => $response['success'],
+                'total_requested' => $response['total_requested'],
+                'total_created' => $response['total_created'],
+                'total_updated' => $response['total_updated'],
+                'execution_time_ms' => $response['execution_time_ms'] ?? 'N/A'
+            ]);
+
+            // Update counts atomically
+            \DB::transaction(function() use ($importRun, $response) {
+                if (($response['total_created'] ?? 0) > 0) {
+                    $importRun->increment('created_records', $response['total_created']);
+                }
+                if (($response['total_updated'] ?? 0) > 0) {
+                    $importRun->increment('updated_records', $response['total_updated']);
+                }
+            });
+
+            // Log success details
+            if (($response['total_created'] ?? 0) > 0) {
+                Log::info("Successfully created {$response['total_created']} products for ImportRun #{$this->importRunId}");
+            }
+            if (($response['total_updated'] ?? 0) > 0) {
+                Log::info("Successfully updated {$response['total_updated']} products for ImportRun #{$this->importRunId}");
+            }
+
+            // Handle products that failed
+            if (!empty($response['failed'])) {
+                \DB::transaction(function() use ($response, $importRun) {
+                    $this->handleUpsertErrors($response['failed'], $importRun);
+                });
+            }
+
+        } catch (\Throwable $e) {
+            // Check for timeout or other server errors that suggest splitting the batch
+            if ($count > 1 && (str_contains($e->getMessage(), '504 Gateway Time-out') || str_contains($e->getMessage(), 'cURL error 28'))) {
+                Log::warning("Caught a timeout error upserting a batch of {$count} products. Splitting batch and retrying.", [
+                    'import_run_id' => $this->importRunId,
+                    'error' => $e->getMessage()
+                ]);
+
+                // Reduce recommended batch size for future jobs
+                $this->reduceRecommendedBatchSize($connection->website->id);
+
+                // Split the batch and retry
+                $midpoint = (int)ceil($count / 2);
+                $batch1 = array_slice($products, 0, $midpoint);
+                $batch2 = array_slice($products, $midpoint);
+
+                $this->processProductUpsert($batch1, $connection, $importRun);
+                $this->processProductUpsert($batch2, $connection, $importRun);
+            } else {
+                // For other errors, log them as failed records
+                Log::error("Failed to upsert a batch of {$count} products for ImportRun #{$this->importRunId}: " . $e->getMessage());
+                $this->logBatchError($e->getMessage(), $products);
+                $importRun->increment('failed_records', $count);
+            }
+        }
+    }
+
+    /**
+     * Handle failed product upserts from the upsert response
+     */
+    protected function handleUpsertErrors(array $failedProducts, ImportRun $importRun): void
+    {
+        Log::info("handleUpsertErrors called", [
+            'import_run_id' => $importRun->id,
+            'failed_products_count' => count($failedProducts)
+        ]);
+        
+        $errorMessages = [];
+        
+        foreach ($failedProducts as $failedProduct) {
+            $error = $failedProduct['error'] ?? 'Unknown error';
+            $sku = $failedProduct['sku'] ?? 'Unknown SKU';
+            $operation = $failedProduct['operation'] ?? 'upsert';
+            
+            $errorMessages[] = [
+                'time' => now()->format('H:i:s'),
+                'error' => "Product {$operation} failed: {$error}",
+                'count' => 1,
+                'samples' => [$sku]
+            ];
+            
+            Log::warning("Product {$operation} failed", [
+                'sku' => $sku,
+                'error' => $error,
+                'operation' => $operation
+            ]);
+        }
+        
+        // Update failed count and error records
+        $importRun->increment('failed_records', count($failedProducts));
+        
+        if (!empty($errorMessages)) {
+            $existingErrors = $importRun->error_records ?? [];
+            if (is_string($existingErrors)) {
+                $existingErrors = json_decode($existingErrors, true) ?? [];
+            }
+            
+            $updatedErrors = array_merge($existingErrors, $errorMessages);
+            $importRun->update(['error_records' => $updatedErrors]);
+        }
     }
 }

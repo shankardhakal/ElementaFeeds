@@ -405,6 +405,40 @@ class WooCommerceApiClient implements ApiClientInterface
     }
 
     /**
+     * Find a product by SKU in all statuses (including trash/deleted).
+     *
+     * @param string $sku The SKU to search for.
+     * @return array|null Returns the product data if found, null otherwise.
+     */
+    public function findProductBySkuAllStatuses(string $sku): ?array
+    {
+        $statuses = ['publish', 'draft', 'pending', 'private', 'trash'];
+        
+        foreach ($statuses as $status) {
+            $endpoint = 'products';
+            $params = [
+                'sku' => $sku,
+                'status' => $status,
+            ];
+
+            try {
+                $response = $this->makeRequest($endpoint, $params);
+                
+                if (!empty($response)) {
+                    $product = $response[0];
+                    $product['found_in_status'] = $status; // Add status info
+                    return $product;
+                }
+            } catch (\Exception $e) {
+                Log::warning("Failed to find product by SKU in status '$status': " . $e->getMessage());
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Get a map of product IDs by their SKUs.
      *
      * @param array $skus List of SKUs to look up.
@@ -1073,5 +1107,211 @@ class WooCommerceApiClient implements ApiClientInterface
                 'total' => 0
             ];
         }
+    }
+
+    /**
+     * Bulletproof upsert method that handles both create and update scenarios
+     * This method addresses the core issue where SKU lookups fail but products exist
+     */
+    public function upsertProducts(array $products): array
+    {
+        if (empty($products)) {
+            return [
+                'success' => true,
+                'total_requested' => 0,
+                'total_created' => 0,
+                'total_updated' => 0,
+                'failed' => [],
+                'execution_time_ms' => 0
+            ];
+        }
+
+        $start = microtime(true);
+        $totalRequested = count($products);
+        $created = [];
+        $updated = [];
+        $failed = [];
+
+        Log::info("Starting bulletproof upsert for {$totalRequested} products");
+
+        // Step 1: Extract SKUs for lookup
+        $skus = array_filter(array_map(function($product) {
+            return $product['sku'] ?? null;
+        }, $products));
+
+        // Step 2: Try to get existing product map
+        $existingProducts = [];
+        try {
+            $existingProducts = $this->getProductIdMapBySkus($skus);
+            Log::debug("Found " . count($existingProducts) . " existing products via SKU lookup");
+        } catch (\Exception $e) {
+            Log::warning("SKU lookup failed, will handle during batch operation: " . $e->getMessage());
+        }
+
+        // Step 3: Separate products into create and update batches
+        $toCreate = [];
+        $toUpdate = [];
+
+        foreach ($products as $product) {
+            $sku = $product['sku'] ?? null;
+            if (!$sku) {
+                $failed[] = [
+                    'product' => $product,
+                    'error' => 'Missing SKU'
+                ];
+                continue;
+            }
+
+            if (isset($existingProducts[$sku])) {
+                // Product exists, prepare for update
+                $toUpdate[] = array_merge($product, ['id' => $existingProducts[$sku]]);
+            } else {
+                // Product doesn't exist (or lookup failed), try to create
+                $toCreate[] = $product;
+            }
+        }
+
+        // Step 4: Process updates first (if any)
+        if (!empty($toUpdate)) {
+            try {
+                $updateResponse = $this->updateProducts($toUpdate);
+                $updated = array_merge($updated, $updateResponse['updated'] ?? []);
+                $failed = array_merge($failed, $updateResponse['failed'] ?? []);
+                Log::info("Updated " . count($updateResponse['updated'] ?? []) . " products");
+            } catch (\Exception $e) {
+                Log::error("Batch update failed: " . $e->getMessage());
+                foreach ($toUpdate as $product) {
+                    $failed[] = [
+                        'product' => $product,
+                        'error' => 'Update failed: ' . $e->getMessage()
+                    ];
+                }
+            }
+        }
+
+        // Step 5: Process creates with bulletproof error handling
+        if (!empty($toCreate)) {
+            try {
+                $createResponse = $this->createProducts($toCreate);
+                
+                // Handle successful creates
+                if (!empty($createResponse['created'])) {
+                    $created = array_merge($created, $createResponse['created']);
+                }
+                
+                // Handle failed creates (including SKU conflicts)
+                if (!empty($createResponse['failed'])) {
+                    foreach ($createResponse['failed'] as $failedProduct) {
+                        $this->handleFailedCreate($failedProduct, $toCreate, $created, $updated, $failed);
+                    }
+                }
+                
+                Log::info("Created " . count($created) . " new products");
+                
+            } catch (\Exception $e) {
+                Log::error("Batch create failed: " . $e->getMessage());
+                foreach ($toCreate as $product) {
+                    $failed[] = [
+                        'product' => $product,
+                        'error' => 'Create failed: ' . $e->getMessage()
+                    ];
+                }
+            }
+        }
+
+        $executionTime = (int)((microtime(true) - $start) * 1000);
+        $totalCreated = count($created);
+        $totalUpdated = count($updated);
+        $totalFailed = count($failed);
+        $success = ($totalCreated + $totalUpdated) > 0;
+
+        Log::info("Upsert completed", [
+            'total_requested' => $totalRequested,
+            'total_created' => $totalCreated,
+            'total_updated' => $totalUpdated,
+            'total_failed' => $totalFailed,
+            'execution_time_ms' => $executionTime
+        ]);
+
+        return [
+            'success' => $success,
+            'total_requested' => $totalRequested,
+            'total_created' => $totalCreated,
+            'total_updated' => $totalUpdated,
+            'created' => $created,
+            'updated' => $updated,
+            'failed' => $failed,
+            'execution_time_ms' => $executionTime
+        ];
+    }
+    
+    /**
+     * Handle failed create attempts - convert SKU conflicts to updates
+     */
+    private function handleFailedCreate($failedProduct, $originalProducts, &$created, &$updated, &$failed): void
+    {
+        $errorMessage = '';
+        if (isset($failedProduct['error']['message'])) {
+            $errorMessage = $failedProduct['error']['message'];
+        }
+        
+        // Check if this is a SKU conflict (product already exists)
+        if (strpos($errorMessage, 'jo hakutaulukossa') !== false || 
+            strpos($errorMessage, 'already exists') !== false ||
+            (isset($failedProduct['error']['code']) && $failedProduct['error']['code'] === 'woocommerce_rest_product_not_created')) {
+            
+            // Try to find and update the existing product
+            $sku = $this->extractSkuFromFailedProduct($failedProduct, $originalProducts);
+            if ($sku) {
+                try {
+                    $existingProduct = $this->findProductBySKU($sku);
+                    if ($existingProduct && isset($existingProduct['id'])) {
+                        // Find the original product data
+                        $originalProduct = $this->findProductInArray($originalProducts, $sku);
+                        if ($originalProduct) {
+                            $this->updateProduct($existingProduct['id'], $originalProduct);
+                            $updated[] = array_merge($originalProduct, ['id' => $existingProduct['id']]);
+                            Log::info("Converted failed create to successful update for SKU: {$sku}");
+                            return;
+                        }
+                    }
+                } catch (\Exception $updateError) {
+                    Log::warning("Failed to update existing product {$sku}: " . $updateError->getMessage());
+                }
+            }
+        }
+        
+        // If we couldn't handle it as an update, mark as failed
+        $failed[] = $failedProduct;
+    }
+
+    /**
+     * Helper method to extract SKU from failed product response
+     */
+    private function extractSkuFromFailedProduct($failedProduct, $originalProducts): ?string
+    {
+        // Try to extract SKU from error message
+        if (isset($failedProduct['error']['message'])) {
+            $message = $failedProduct['error']['message'];
+            if (preg_match('/SKU-koodia \(([^)]+)\)/', $message, $matches)) {
+                return $matches[1];
+            }
+        }
+        
+        // Fallback: try to match by index or other means
+        return null;
+    }
+
+    /**
+     * Helper method to find original product data by SKU
+     */
+    private function findProductInArray($products, $sku): ?array
+    {
+        foreach ($products as $product) {
+            if (isset($product['sku']) && $product['sku'] === $sku) {
+                return $product;
+            }
+        }
+        return null;
     }
 }
