@@ -428,8 +428,8 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
 
         // Handle products that failed validation within the batch
         if (!empty($response['failed'])) {
-            \DB::transaction(function() use ($response, $productsToCreate, $connection, $importRun) {
-                $this->handleBatchErrors($response['failed'], $productsToCreate, $connection, $importRun);
+            \DB::transaction(function() use ($response, $importRun) {
+                $this->handleBatchCreationErrors($response['failed'], $importRun);
             });
         }
     }
@@ -558,6 +558,54 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
             $this->logBatchError($error['message'], [$batch[$error['index']]]);
         }
         $importRun->increment('failed_records', count($errors));
+    }
+    
+    /**
+     * Handle failed product creations from WooCommerce API response
+     */
+    protected function handleBatchCreationErrors(array $failedProducts, ImportRun $importRun)
+    {
+        $errorMessages = [];
+        
+        foreach ($failedProducts as $index => $failedProduct) {
+            if (isset($failedProduct['error'])) {
+                $error = $failedProduct['error'];
+                $errorCode = $error['code'] ?? 'unknown';
+                $errorMessage = $error['message'] ?? 'Unknown error';
+                
+                // Extract SKU from error message if available
+                $sku = 'Unknown SKU';
+                if (preg_match('/SKU-koodia \(([^)]+)\)/', $errorMessage, $matches)) {
+                    $sku = $matches[1];
+                }
+                
+                $errorMessages[] = [
+                    'time' => now()->format('H:i:s'),
+                    'error' => "Product creation failed: {$errorCode} - {$errorMessage}",
+                    'count' => 1,
+                    'samples' => [$sku]
+                ];
+                
+                Log::warning("Product creation failed", [
+                    'sku' => $sku,
+                    'error_code' => $errorCode,
+                    'error_message' => $errorMessage
+                ]);
+            }
+        }
+        
+        // Update failed count and error records
+        $importRun->increment('failed_records', count($failedProducts));
+        
+        if (!empty($errorMessages)) {
+            $existingErrors = $importRun->error_records ?? [];
+            if (is_string($existingErrors)) {
+                $existingErrors = json_decode($existingErrors, true) ?? [];
+            }
+            
+            $updatedErrors = array_merge($existingErrors, $errorMessages);
+            $importRun->update(['error_records' => $updatedErrors]);
+        }
     }
 
     /**

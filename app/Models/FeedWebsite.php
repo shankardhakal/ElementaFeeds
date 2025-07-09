@@ -59,10 +59,13 @@ class FeedWebsite extends Pivot
     }
 
     /**
-     * local key ('id') to remove any ambiguity for Eloquent's query builder.
+     * Get the latest import run for this connection.
+     * Using a more explicit approach to avoid column ambiguity with latestOfMany().
      */
     public function latestImportRun()
     {
-        return $this->hasOne(ImportRun::class, 'feed_website_id', 'id')->latestOfMany();
+        return $this->hasOne(ImportRun::class, 'feed_website_id', 'id')
+                    ->select('import_runs.id', 'import_runs.feed_website_id', 'import_runs.status', 'import_runs.created_at')
+                    ->orderByDesc('import_runs.created_at');
     }
 }

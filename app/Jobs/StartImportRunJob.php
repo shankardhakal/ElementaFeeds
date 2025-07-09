@@ -55,51 +55,24 @@ class StartImportRunJob implements ShouldQueue, ShouldBeUnique
      */
     public function handle(): void
     {
-        // Atomically check and mark importing to prevent concurrent runs.
-        try {
-            DB::beginTransaction();
-            $conn = FeedWebsite::where('id', $this->feedWebsiteConnection->id)
-                ->lockForUpdate()
-                ->first();
-            if ($conn && $conn->is_importing) {
-                Log::warning("Import already in progress for connection: {$conn->name} (#{$conn->id})");
-                DB::rollBack();
-                return;
-            }
-            
-            // Check website-level concurrency limit
-            $websiteId = $conn->website_id;
-            $maxConcurrentImports = config('feeds.max_concurrent_imports_per_website', 3); // Default to 3
-            $activeImports = FeedWebsite::where('website_id', $websiteId)
-                ->where('is_importing', true)
-                ->count();
-                
-            if ($activeImports >= $maxConcurrentImports) {
-                Log::warning("Maximum concurrent imports ({$maxConcurrentImports}) reached for website #{$websiteId}. Connection: {$conn->name} (#{$conn->id})");
-                DB::rollBack();
-                return;
-            }
-            
-            $conn->update(['is_importing' => true]);
-            DB::commit();
-        } catch (\Throwable $e) {
-            DB::rollBack();
-            Log::error("StartImportRunJob: failed to acquire lock for connection #{$this->feedWebsiteConnection->id}: " . $e->getMessage());
-            return;
-        }
-
         Log::info("Starting import run for connection: {$this->feedWebsiteConnection->name} (#{$this->feedWebsiteConnection->id})");
 
         // Create a record in the `import_runs` table to track this specific execution.
+        // The unique constraint on (feed_website_id, status) prevents concurrent runs.
         try {
             $importRun = $this->feedWebsiteConnection->importRuns()->create([
                 'status' => 'processing',
                 'error_records' => [],
             ]);
         } catch (\Illuminate\Database\QueryException $e) {
-            Log::warning("Duplicate import run detected for connection #{$this->feedWebsiteConnection->id}, aborting.");
-            // Reset importing flag so user can retry later
-            $this->feedWebsiteConnection->update(['is_importing' => false]);
+            // Handle constraint violation (duplicate processing run)
+            if ($e->getCode() === '23000') {
+                Log::warning("Concurrent import run detected for connection #{$this->feedWebsiteConnection->id}, aborting.");
+                return;
+            }
+            
+            // Handle other database errors
+            Log::error("Failed to create import run for connection #{$this->feedWebsiteConnection->id}: " . $e->getMessage());
             return;
         }
 

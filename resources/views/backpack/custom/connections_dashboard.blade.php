@@ -98,7 +98,7 @@
     <div class="card">
       <div class="card-header">
         <i class="la la-link"></i> All Connections
-        @if($search || $status !== '' || $import_status)
+        @if($has_filters)
           <small class="text-muted">(Filtered Results)</small>
         @endif
       </div>
@@ -228,7 +228,7 @@
             @empty
               <tr>
                 <td colspan="8" class="text-center p-3">
-                  @if($search || $status !== '' || $import_status)
+                  @if($has_filters)
                     No connections match your search criteria. 
                     <a href="{{ route('connection.index') }}">Clear filters</a> to see all connections.
                   @else
@@ -249,7 +249,7 @@
               <div class="mb-2 mb-md-0">
                 <small class="text-muted">
                   Showing {{ $connections->firstItem() }} to {{ $connections->lastItem() }} of {{ $connections->total() }} connections
-                  @if($search || $status !== '' || $import_status)
+                  @if($has_filters)
                     (filtered)
                   @endif
                 </small>
@@ -267,7 +267,7 @@
             <div class="text-center">
               <small class="text-muted">
                 {{ $connections->total() }} connection{{ $connections->total() !== 1 ? 's' : '' }} total
-                @if($search || $status !== '' || $import_status)
+                @if($has_filters)
                   (filtered)
                 @endif
               </small>
@@ -323,14 +323,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 this.classList.remove('disabled');
             }, 3000);
         });
-    }
-    
-    // Refresh page every 30 seconds if there are processing imports
-    const processingBadges = document.querySelectorAll('.bg-info');
-    if (processingBadges.length > 0) {
-        setTimeout(() => {
-            location.reload();
-        }, 30000);
     }
 });
 </script>

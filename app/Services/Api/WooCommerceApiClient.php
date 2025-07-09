@@ -74,14 +74,25 @@ class WooCommerceApiClient implements ApiClientInterface
         ]);
 
         $created = $response['create'] ?? [];
-        $success = !empty($created);
+        
+        // Filter out failed products - only count products that were actually created
+        $successfullyCreated = array_filter($created, function($product) {
+            return !empty($product['id']) && $product['id'] > 0 && !isset($product['error']);
+        });
+        
+        $failed = array_filter($created, function($product) {
+            return empty($product['id']) || $product['id'] <= 0 || isset($product['error']);
+        });
+        
+        $success = !empty($successfullyCreated);
         $error = $response['error'] ?? null;
 
         return [
             'success' => $success,
             'total_requested' => count($products),
-            'total_created' => count($created),
-            'created' => $created,
+            'total_created' => count($successfullyCreated),
+            'created' => $successfullyCreated,
+            'failed' => $failed,
             'error' => $error,
             'execution_time_ms' => (int)((microtime(true) - $start) * 1000)
         ];

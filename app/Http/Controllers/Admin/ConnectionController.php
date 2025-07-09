@@ -42,27 +42,33 @@ class ConnectionController extends Controller
         
         // Search functionality with optimized queries
         if ($search = $request->get('search')) {
-            $query->where(function($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                  ->orWhereHas('feed', function($q) use ($search) {
-                      $q->where('name', 'like', "%{$search}%");
-                  })
-                  ->orWhereHas('website', function($q) use ($search) {
-                      $q->where('name', 'like', "%{$search}%");
-                  });
-            });
+            // Only apply search if search term is not empty
+            if (trim($search) !== '') {
+                $query->where(function($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                      ->orWhereHas('feed', function($q) use ($search) {
+                          $q->where('name', 'like', "%{$search}%");
+                      })
+                      ->orWhereHas('website', function($q) use ($search) {
+                          $q->where('name', 'like', "%{$search}%");
+                      });
+                });
+            }
         }
         
         // Status filter
-        if ($request->has('status') && $request->get('status') !== '') {
+        if ($request->has('status') && $request->get('status') !== '' && $request->get('status') !== null) {
             $query->where('is_active', $request->get('status'));
         }
         
         // Import status filter
         if ($importStatus = $request->get('import_status')) {
-            $query->whereHas('latestImportRun', function($q) use ($importStatus) {
-                $q->where('status', $importStatus);
-            });
+            // Only apply import status filter if not empty
+            if (trim($importStatus) !== '') {
+                $query->whereHas('latestImportRun', function($q) use ($importStatus) {
+                    $q->where('status', $importStatus);
+                });
+            }
         }
         
         // Apply sorting
@@ -70,8 +76,8 @@ class ConnectionController extends Controller
             // Special handling for last_run_at since it comes from relationship
             $query->leftJoin('import_runs as latest_runs', function($join) {
                 $join->on('feed_website.id', '=', 'latest_runs.feed_website_id')
-                     ->whereRaw('latest_runs.id = (SELECT MAX(id) FROM import_runs WHERE feed_website_id = feed_website.id)');
-            })->orderBy('latest_runs.created_at', $sortDirection);
+                     ->whereRaw('latest_runs.id = (SELECT MAX(id) FROM import_runs WHERE import_runs.feed_website_id = feed_website.id)');
+            })->select('feed_website.*')->orderBy('latest_runs.created_at', $sortDirection);
         } else {
             $query->orderBy($sortField, $sortDirection);
         }
@@ -82,12 +88,16 @@ class ConnectionController extends Controller
         $connections->appends($request->query());
 
         $data['connections'] = $connections;
-        $data['search'] = $search ?? '';
+        $data['search'] = trim($search ?? '');
         $data['status'] = $request->get('status', '');
-        $data['import_status'] = $request->get('import_status', '');
+        $data['import_status'] = trim($request->get('import_status', ''));
         $data['sort'] = $sortField;
         $data['direction'] = $sortDirection;
         $data['per_page'] = $perPage;
+        // Determine if any actual filters are applied
+        $data['has_filters'] = !empty(trim($search ?? '')) || 
+                              ($request->has('status') && $request->get('status') !== '') || 
+                              !empty(trim($request->get('import_status', '')));
         $data['title'] = 'Manage Connections';
         $data['breadcrumbs'] = [
             trans('backpack::crud.admin') => backpack_url('dashboard'),
