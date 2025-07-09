@@ -65,7 +65,21 @@ class DashboardController extends Controller
                                         ->take(10)
                                         ->get();
 
+        $data['feeds'] = Feed::all();
+
+        // Mapping wizard enhancement: include the unique identifier field for mapping
+        $data['destination_fields']['unique_identifier'] = 'Unique Identifier (Feed Name + Source ID)';
+
         // This now points to your custom view path.
         return view('backpack.custom.dashboard', $data);
+    }
+
+    /**
+     * Download detailed error records for an import run.
+     */
+    public function errors(int $id)
+    {
+        $run = ImportRun::findOrFail($id);
+        return response()->json(['errors' => $run->error_records ?? []]);
     }
 }

@@ -6,6 +6,8 @@ use App\Http\Requests\FeedRequest;
 use Backpack\CRUD\app\Http\Controllers\CrudController;
 use Backpack\CRUD\app\Library\CrudPanel\CrudPanelFacade as CRUD;
 use App\Http\Controllers\Admin\Traits\ProvidesLanguageOptions;
+use App\Jobs\DeleteFeedProductsJob;
+use Illuminate\Support\Facades\Route;
 
 class FeedCrudController extends CrudController
 {
@@ -31,6 +33,9 @@ class FeedCrudController extends CrudController
         CRUD::column('feed_url')->label('Feed URL')->type('url');
         CRUD::column('language')->label('Language');
         CRUD::column('is_active')->type('boolean')->label('Active');
+
+        // Note: Delete feed products functionality is available in the main dashboard
+        // No additional button needed here
     }
 
     protected function setupCreateOperation()
@@ -93,4 +98,7 @@ class FeedCrudController extends CrudController
     {
         $this->setupCreateOperation();
     }
+
+    // Note: deleteFeedProducts method removed as the functionality
+    // is available in the main dashboard interface
 }

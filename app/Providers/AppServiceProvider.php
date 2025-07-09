@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\View;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -76,6 +77,8 @@ class AppServiceProvider extends ServiceProvider
         });
 
         Blade::anonymousComponentPath(resource_path('views/backpack/custom/components'));
+
+        View::addNamespace('backpack', resource_path('views/backpack'));
 
         $this->configureQueue();
     }

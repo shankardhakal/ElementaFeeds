@@ -4,6 +4,8 @@ namespace App\Jobs;
 
 use App\Models\FeedWebsite;
 use App\Models\ImportRun;
+use App\Services\CategoryNormalizer;
+use App\Services\FilterService;
 use Illuminate\Bus\Batch;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -17,6 +19,17 @@ use League\Csv\Reader;
 use Throwable;
 use App\Jobs\CleanupImportRunChunksJob; // Add this line
 
+/**
+ * ChunkFeedJob
+ *
+ * This job is responsible for splitting a large CSV feed file into smaller JSON chunks for batch processing.
+ *
+ * Key Tasks:
+ * - Reads the CSV file using League\Csv\Reader.
+ * - Splits the records into chunks of a predefined size (CHUNK_SIZE).
+ * - Saves each chunk as a JSON file in a designated directory.
+ * - Dispatches ProcessChunkJob for each chunk to process the data.
+ */
 class ChunkFeedJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
@@ -51,7 +64,26 @@ class ChunkFeedJob implements ShouldQueue
         $connection = FeedWebsite::findOrFail($this->feedWebsiteConnectionId);
 
         Log::info("ChunkFeedJob started for import run #{$importRun->id}.");
-        $importRun->update(['status' => 'chunking']);
+        
+        // Safely update status with constraint handling
+        try {
+            $importRun->update(['status' => 'chunking']);
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            // Clean up any conflicting stuck runs for this connection
+            ImportRun::where('feed_website_id', $connection->id)
+                ->where('status', 'chunking')
+                ->where('id', '!=', $importRun->id)
+                ->where('updated_at', '<', now()->subMinutes(30))
+                ->update([
+                    'status' => 'failed',
+                    'finished_at' => now(),
+                    'log_messages' => 'Import run interrupted by newer import.'
+                ]);
+            
+            // Retry the status update
+            $importRun->refresh();
+            $importRun->update(['status' => 'chunking']);
+        }
 
         $chunkDirectory = storage_path("app/import_chunks/{$importRun->id}");
 
@@ -61,7 +93,25 @@ class ChunkFeedJob implements ShouldQueue
             $chunkFiles = $this->processCsv($connection, $this->sourceFilePath, $chunkDirectory);
 
             if (empty($chunkFiles)) {
-                $importRun->update(['status' => 'failed', 'finished_at' => now(), 'log_messages' => 'No chunk files were created. The source feed might be empty or invalid.']);
+                // Safely update status with constraint handling
+                try {
+                    $importRun->update(['status' => 'failed', 'finished_at' => now(), 'log_messages' => 'No chunk files were created. The source feed might be empty or invalid.']);
+                } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+                    // Clean up any conflicting stuck runs for this connection
+                    ImportRun::where('feed_website_id', $connection->id)
+                        ->where('status', 'failed')
+                        ->where('id', '!=', $importRun->id)
+                        ->where('updated_at', '<', now()->subMinutes(30))
+                        ->update([
+                            'status' => 'expired',
+                            'finished_at' => now(),
+                            'log_messages' => 'Import run status changed to avoid constraint violation.'
+                        ]);
+                    
+                    // Retry the status update
+                    $importRun->refresh();
+                    $importRun->update(['status' => 'failed', 'finished_at' => now(), 'log_messages' => 'No chunk files were created. The source feed might be empty or invalid.']);
+                }
                 Log::error("No chunk files created for import run #{$importRun->id}.");
                 CleanupImportRunChunksJob::dispatch($importRun->id); // Use the job
                 return;
@@ -86,16 +136,67 @@ class ChunkFeedJob implements ShouldQueue
                 CleanupImportRunChunksJob::dispatch($importRun->id); // Use the job
             })->name("Import Run #{$importRun->id} for Connection #{$connection->id}")->dispatch();
 
-            $importRun->update(['batch_id' => $batch->id, 'status' => 'processing']);
+            // Safely update status with constraint handling
+            try {
+                $importRun->update(['batch_id' => $batch->id, 'status' => 'processing']);
+            } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+                // Clean up any conflicting stuck runs for this connection
+                ImportRun::where('feed_website_id', $connection->id)
+                    ->where('status', 'processing')
+                    ->where('id', '!=', $importRun->id)
+                    ->where('updated_at', '<', now()->subMinutes(30))
+                    ->update([
+                        'status' => 'failed',
+                        'finished_at' => now(),
+                        'log_messages' => 'Import run interrupted by newer import.'
+                    ]);
+                
+                // Retry the status update
+                $importRun->refresh();
+                $importRun->update(['batch_id' => $batch->id, 'status' => 'processing']);
+            }
             Log::info("Dispatched ProcessChunkJob batch {$batch->id} for import run #{$importRun->id}.");
 
         } catch (\Exception $e) {
             Log::error("ChunkFeedJob failed for import run #{$importRun->id}: " . $e->getMessage());
-            $importRun->update(['status' => 'failed', 'finished_at' => now(), 'log_messages' => $e->getMessage()]);
+            // Safely update status with constraint handling
+            try {
+                $importRun->update(['status' => 'failed', 'finished_at' => now(), 'log_messages' => $e->getMessage()]);
+            } catch (\Illuminate\Database\UniqueConstraintViolationException $constraintError) {
+                // Clean up any conflicting stuck runs for this connection
+                ImportRun::where('feed_website_id', $connection->id)
+                    ->where('status', 'failed')
+                    ->where('id', '!=', $importRun->id)
+                    ->where('updated_at', '<', now()->subMinutes(30))
+                    ->update([
+                        'status' => 'expired',
+                        'finished_at' => now(),
+                        'log_messages' => 'Import run status changed to avoid constraint violation.'
+                    ]);
+                
+                // Retry the status update
+                $importRun->refresh();
+                $importRun->update(['status' => 'failed', 'finished_at' => now(), 'log_messages' => $e->getMessage()]);
+            }
             CleanupImportRunChunksJob::dispatch($importRun->id); // Use the job
         }
     }
 
+    /**
+     * processCsv
+     *
+     * Processes the CSV file and splits it into smaller chunks.
+     *
+     * @param FeedWebsite $connection The feed website connection.
+     * @param string $sourceFilePath The path to the source CSV file.
+     * @param string $chunkDirectory The directory to save chunk files.
+     * @return array List of chunk file paths.
+     *
+     * Key Tasks:
+     * - Reads the CSV file using League\Csv\Reader.
+     * - Splits the records into chunks of CHUNK_SIZE.
+     * - Saves each chunk as a JSON file.
+     */
     protected function processCsv(FeedWebsite $connection, string $sourceFilePath, string $chunkDirectory): array
     {
         $feed = $connection->feed;
@@ -105,23 +206,115 @@ class ChunkFeedJob implements ShouldQueue
             throw new \Exception("Source file does not exist at path: {$sourceFilePath}");
         }
 
+        // Eagerly load mappings and rules to avoid repeated access inside the loop.
+        $rawCategoryMappings = $connection->category_mappings ?? [];
+        
+        // Transform category mappings from wizard format [['source' => '...', 'dest' => '...']] 
+        // to normalizer format ['source' => 'dest_id']
+        $categoryMap = [];
+        foreach ($rawCategoryMappings as $mapping) {
+            if (isset($mapping['source']) && isset($mapping['dest']) && !empty($mapping['dest'])) {
+                $categoryMap[$mapping['source']] = (int) $mapping['dest'];
+            }
+        }
+        
+        $filteringRules = $connection->filtering_rules;
+        $categorySourceField = $connection->category_source_field;
+        $userDelimiter = $connection->category_delimiter;
+
+        if (empty($categorySourceField)) {
+            // If the admin hasn't configured the category source field, we can't proceed with mapping.
+            // We can still import products, but they won't be categorized.
+            Log::warning("Category source field is not configured for connection #{$connection->id}. Products will be imported without category mapping.");
+        }
+
+        if (empty($userDelimiter)) {
+            Log::warning("Category delimiter is not configured for connection #{$connection->id}. The system will attempt to find a suitable delimiter automatically.");
+        }
+
         $csv = Reader::createFromPath($sourceFilePath, 'r');
         $csv->setDelimiter($feed->delimiter);
         $csv->setEnclosure($feed->enclosure);
         $csv->setHeaderOffset(0);
 
         $records = $csv->getRecords();
+        $filterService = new \App\Services\FilterService();
+        
+        // Debug: Log filtering configuration
+        $mappedCategoriesCount = count($categoryMap);
+        Log::info("ChunkFeedJob Debug - Connection {$connection->id}", [
+            'category_source_field' => $categorySourceField,
+            'category_delimiter' => $userDelimiter,
+            'mapped_categories_count' => $mappedCategoriesCount,
+            'raw_mappings_count' => count($rawCategoryMappings),
+            'filtering_rules_count' => count($filteringRules ?? [])
+        ]);
+        
         $chunkIndex = 1;
+        $buffer = [];
+        $totalProcessed = 0;
+        $categoryFilterCount = 0;
+        $ruleFilterCount = 0;
+        
+        foreach ($records as $record) {
+            $totalProcessed++;
+            
+            // Check category mapping first
+            if (empty($categorySourceField) || !isset($record[$categorySourceField])) {
+                $categoryFilterCount++;
+                continue; // Skip to the next record
+            }
 
-        foreach (collect($records)->chunk(self::CHUNK_SIZE) as $chunk) {
-            if ($chunk->isEmpty()) continue;
+            $rawCategory = $record[$categorySourceField];
+            $mappedCategoryId = \App\Services\CategoryNormalizer::normalize($rawCategory, $userDelimiter, $categoryMap);
+
+            // If the category normalizer doesn't find a valid, mapped category, skip the product.
+            if ($mappedCategoryId === null) {
+                $categoryFilterCount++;
+                continue;
+            }
+
+            // Apply mapping-wizard filter on-the-fly
+            if (!$filterService->passes($record, $filteringRules)) {
+                $ruleFilterCount++;
+                continue;
+            }
+
+            $buffer[] = $record;
+            if (count($buffer) >= self::CHUNK_SIZE) {
+                $chunkFileName = "chunk_{$chunkIndex}.json";
+                $chunkFilePath = "{$chunkDirectory}/{$chunkFileName}";
+                File::put($chunkFilePath, json_encode(array_values($buffer)));
+                $chunkFiles[] = $chunkFilePath;
+                Log::info("Prepared chunk file: {$chunkFileName} for ImportRun #{$this->importRunId}");
+                $buffer = [];
+                $chunkIndex++;
+            }
+        }
+        
+        // Write any remaining records
+        if (! empty($buffer)) {
             $chunkFileName = "chunk_{$chunkIndex}.json";
             $chunkFilePath = "{$chunkDirectory}/{$chunkFileName}";
-            File::put($chunkFilePath, $chunk->values()->toJson()); // Use values() to reset keys for valid JSON array
+            File::put($chunkFilePath, json_encode(array_values($buffer)));
             $chunkFiles[] = $chunkFilePath;
             Log::info("Prepared chunk file: {$chunkFileName} for ImportRun #{$this->importRunId}");
-            $chunkIndex++;
         }
+
+        $totalFiltered = $categoryFilterCount + $ruleFilterCount;
+        
+        // Debug: Log filtering results
+        Log::info("ChunkFeedJob Debug - Filtering Results", [
+            'connection_id' => $connection->id,
+            'total_processed' => $totalProcessed,
+            'total_filtered_out' => $totalFiltered,
+            'category_filter_count' => $categoryFilterCount,
+            'rule_filter_count' => $ruleFilterCount,
+            'chunks_created' => count($chunkFiles),
+            'records_passing_filters' => $totalProcessed - $totalFiltered
+        ]);
+
         return $chunkFiles;
     }
+
 }

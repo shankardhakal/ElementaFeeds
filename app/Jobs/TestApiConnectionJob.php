@@ -13,6 +13,16 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 
+/**
+ * TestApiConnectionJob
+ *
+ * This job tests the API connection for a given website.
+ *
+ * Key Tasks:
+ * - Fetches the Website model using the provided website ID.
+ * - Determines the appropriate API client based on the platform (WooCommerce or WordPress).
+ * - Logs the results of the API connection test.
+ */
 class TestApiConnectionJob implements ShouldQueue, ShouldBeUnique
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
@@ -26,6 +36,11 @@ class TestApiConnectionJob implements ShouldQueue, ShouldBeUnique
 
     protected int $websiteId;
 
+    /**
+     * Create a new job instance.
+     *
+     * @param int $websiteId The ID of the website to test the API connection for.
+     */
     public function __construct(int $websiteId)
     {
         $this->websiteId = $websiteId;
@@ -39,6 +54,11 @@ class TestApiConnectionJob implements ShouldQueue, ShouldBeUnique
         return (string)$this->websiteId;
     }
 
+    /**
+     * Execute the job.
+     *
+     * @return void
+     */
     public function handle(): void
     {
         $website = Website::find($this->websiteId);
@@ -56,8 +76,35 @@ class TestApiConnectionJob implements ShouldQueue, ShouldBeUnique
             
             Log::info("Testing with client: " . get_class($apiClient));
             
-            // This test call will now throw a specific exception on failure.
-            $apiClient->getCategories();
+            // Run test connection first
+            if ($website->platform === 'woocommerce') {
+                $connectionTest = $apiClient->testConnection();
+                
+                if (!$connectionTest['success']) {
+                    throw new \Exception("WooCommerce API connection failed: " . ($connectionTest['message'] ?? 'Unknown error'));
+                }
+                
+                Log::info("WooCommerce API connection test successful", [
+                    'response_time' => $connectionTest['execution_time_ms'] ?? 'N/A',
+                    'products_count' => $connectionTest['response']['products_count'] ?? 0
+                ]);
+                
+                // Also check for product statuses if any products exist
+                if (($connectionTest['response']['products_count'] ?? 0) > 0) {
+                    try {
+                        // This get categories call will throw an exception if there's an issue
+                        $categories = $apiClient->getCategories();
+                        
+                        Log::info("Successfully retrieved " . count($categories) . " categories from WooCommerce");
+                    } catch (\Exception $e) {
+                        Log::warning("Failed to get categories: " . $e->getMessage());
+                        // Continue with the test, don't throw an exception here
+                    }
+                }
+            } else {
+                // For other platforms, just test categories
+                $apiClient->getCategories();
+            }
 
             // This line will only be reached if no exception was thrown.
             $website->connection_status = 'ok';

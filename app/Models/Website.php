@@ -26,7 +26,7 @@ class Website extends Model
         'platform',
         'language',
         'woocommerce_credentials', 
-        'wordpress_credentials', 
+        'wordpress_credentials',
     ];
 
     /**

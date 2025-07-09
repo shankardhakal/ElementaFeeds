@@ -6,7 +6,7 @@
         <div class="card">
             <div class="card-header"><strong>Queue Worker Settings</strong></div>
             <div class="card-body">
-                <form action="{{ route('backpack.setting.update') }}" method="POST">
+                <form action="{{ route('setting.update') }}" method="POST">
                     @csrf
                     <p class="text-muted">These settings control the performance and resource usage of the background job processor. Changes will be applied immediately.</p>
                     

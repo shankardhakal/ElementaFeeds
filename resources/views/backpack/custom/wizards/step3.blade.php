@@ -29,7 +29,7 @@
                             <select name="field_mappings[{{ $field_key }}]" class="form-control form-control-sm">
                                 <option value="">-- Do not map --</option>
                                 @foreach($sourceHeaders as $header)
-                                    <option value="{{ e($header) }}">{{ e($header) }}</option>
+                                    <option value="{{ e($header) }}" {{ isset($wizardData['field_mappings'][$field_key]) && $wizardData['field_mappings'][$field_key] == $header ? 'selected' : '' }}>{{ e($header) }}</option>
                                 @endforeach
                             </select>
                         </div>
@@ -45,20 +45,20 @@
                     <div class="row">
                         <div class="form-group col-md-5">
                             <label for="category_source_field">1. Category Source Field</label>
-                            <select id="category_source_field" class="form-control">
+                            <select id="category_source_field" name="category_source_field" class="form-control">
                                 <option value="">-- Select Feed Column --</option>
                                 @foreach($sourceHeaders as $header)
-                                    <option value="{{ $header }}">{{ $header }}</option>
+                                    <option value="{{ $header }}" {{ isset($wizardData['category_source_field']) && $wizardData['category_source_field'] == $header ? 'selected' : '' }}>{{ $header }}</option>
                                 @endforeach
                             </select>
                         </div>
                         <div class="form-group col-md-5">
                             <label for="category_delimiter">2. Delimiter</label>
-                            <select id="category_delimiter" class="form-control">
-                                <option value=">">Greater Than ( > )</option>
-                                <option value="-">Hyphen ( - )</option>
-                                <option value="/">Forward Slash ( / )</option>
-                                <option value="|">Pipe ( | )</option>
+                            <select id="category_delimiter" name="category_delimiter" class="form-control">
+                                <option value=">" {{ isset($wizardData['category_delimiter']) && $wizardData['category_delimiter'] == '>' ? 'selected' : '' }}>Greater Than ( > )</option>
+                                <option value="-" {{ isset($wizardData['category_delimiter']) && $wizardData['category_delimiter'] == '-' ? 'selected' : '' }}>Hyphen ( - )</option>
+                                <option value="/" {{ isset($wizardData['category_delimiter']) && $wizardData['category_delimiter'] == '/' ? 'selected' : '' }}>Forward Slash ( / )</option>
+                                <option value="|" {{ isset($wizardData['category_delimiter']) && $wizardData['category_delimiter'] == '|' ? 'selected' : '' }}>Pipe ( | )</option>
                             </select>
                         </div>
                         <div class="form-group col-md-2 d-flex align-items-end">
@@ -134,6 +134,42 @@ document.addEventListener('DOMContentLoaded', function () {
     const mappingContainer = document.getElementById('category-mapping-container');
     const loader = document.getElementById('category-parser-loader');
     const destCategories = @json($destination_categories ?? []);
+    const existingMappings = @json($wizardData['category_mappings'] ?? []);
+    
+    // Function to add a category mapping row
+    function addCategoryMappingRow(sourceCat, destCatId, index) {
+        const row = document.createElement('div');
+        row.classList.add('form-group', 'row', 'align-items-center', 'mb-2');
+        row.innerHTML = `
+            <div class="col-md-5">
+                <input type="text" name="category_mappings[${index}][source]" class="form-control form-control-sm" value="${sourceCat}" readonly>
+            </div>
+            <div class="col-md-5">
+                <select name="category_mappings[${index}][dest]" class="form-control form-control-sm">
+                    <option value="">-- Select a category --</option>
+                    ${destCategories.map(c => `<option value="${c.id}" ${destCatId == c.id ? 'selected' : ''}>${c.name}</option>`).join('')}
+                </select>
+            </div>
+        `;
+        mappingContainer.appendChild(row);
+    }
+    
+    // Check if we have existing mappings to display
+    if (existingMappings && existingMappings.length > 0 && destCategories && destCategories.length > 0) {
+        // Display existing mappings if we have them
+        mappingContainer.innerHTML = '';
+        let catIndex = 0;
+        
+        existingMappings.forEach(mapping => {
+            if (mapping.source && mapping.hasOwnProperty('dest')) {
+                addCategoryMappingRow(mapping.source, mapping.dest, catIndex);
+                catIndex++;
+            }
+        });
+        
+        // Show the mapping UI
+        mappingUi.style.display = 'block';
+    }
 
     if (parseBtn) {
         parseBtn.addEventListener('click', function() {
@@ -162,23 +198,22 @@ document.addEventListener('DOMContentLoaded', function () {
                 loader.style.display = 'none';
                 if (data.categories && data.categories.length > 0) {
                     let catIndex = 0;
+                    mappingContainer.innerHTML = ''; // Clear existing mappings
+                    
                     data.categories.forEach(sourceCat => {
-                        const row = document.createElement('div');
-                        row.classList.add('form-group', 'row', 'align-items-center', 'mb-2');
-                        row.innerHTML = `
-                            <div class="col-md-5">
-                                <input type="text" name="category_mappings[${catIndex}][source]" class="form-control form-control-sm" value="${sourceCat}" readonly>
-                            </div>
-                            <div class="col-md-5">
-                                <select name="category_mappings[${catIndex}][dest]" class="form-control form-control-sm">
-                                    <option value="">-- Select a category --</option>
-                                    ${destCategories.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
-                                </select>
-                            </div>
-                        `;
-                        mappingContainer.appendChild(row);
+                        // Find if this source category already has a mapping
+                        let existingDest = '';
+                        if (existingMappings && existingMappings.length > 0) {
+                            const existing = existingMappings.find(m => m.source === sourceCat);
+                            if (existing && existing.dest) {
+                                existingDest = existing.dest;
+                            }
+                        }
+                        
+                        addCategoryMappingRow(sourceCat, existingDest, catIndex);
                         catIndex++;
                     });
+                    
                     mappingUi.style.display = 'block';
                 } else {
                     alert('No unique categories could be found using the selected field and delimiter.');

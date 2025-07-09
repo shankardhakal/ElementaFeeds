@@ -12,6 +12,15 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use League\Csv\Reader;
 
+/**
+ * DownloadFeedSample
+ *
+ * This job is responsible for downloading a sample of the feed file for testing or validation purposes.
+ *
+ * Key Tasks:
+ * - Fetches a small portion of the feed file to verify its structure and content.
+ * - Useful for debugging or validating feed configurations.
+ */
 class DownloadFeedSample implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;

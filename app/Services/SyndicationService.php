@@ -89,4 +89,21 @@ class SyndicationService
             }
         }
     }
+
+    protected function getClient(Website $website): Client
+    {
+        $clientOptions = [
+            'base_uri' => $website->url,
+            'headers' => [
+                'Authorization' => 'Basic ' . base64_encode($website->api_key . ':' . $website->api_secret),
+            ],
+            'timeout' => 300,
+        ];
+
+        if ($website->uses_staging_environment) {
+            $clientOptions['verify'] = false; // Disable SSL verification for staging
+        }
+
+        return new Client($clientOptions);
+    }
 }

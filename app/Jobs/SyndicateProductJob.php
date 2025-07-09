@@ -13,6 +13,17 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * SyndicateProductJob
+ *
+ * This job handles the syndication of product data to external platforms.
+ *
+ * Key Tasks:
+ * - Fetches the associated ImportRun and FeedWebsite models.
+ * - Determines the appropriate API client based on the platform (WooCommerce or WordPress).
+ * - Uses the SyndicationService to syndicate product data.
+ * - Logs critical errors if syndication fails.
+ */
 class SyndicateProductJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
@@ -23,12 +34,25 @@ class SyndicateProductJob implements ShouldQueue
     public int $importRunId;
     public array $productData;
 
+    /**
+     * Create a new job instance.
+     *
+     * @param int $importRunId The ID of the import run associated with this job.
+     * @param array $productData The product data to be syndicated.
+     */
     public function __construct(int $importRunId, array $productData)
     {
         $this->importRunId = $importRunId;
         $this->productData = $productData;
     }
 
+    /**
+     * Execute the job.
+     *
+     * @param SyndicationService $syndicationService The service used for syndicating product data.
+     * @return void
+     * @throws \Throwable If syndication fails.
+     */
     public function handle(SyndicationService $syndicationService): void
     {
         try {

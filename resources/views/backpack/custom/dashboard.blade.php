@@ -111,10 +111,12 @@
                   <td>{{ $run->feedWebsite->website->name ?? 'N/A' }}</td>
                   <td><span class="{{ $statusClass }}">{{ Str::title(str_replace('_', ' ', $run->status)) }}</span></td>
                   <td>
-                    C: {{ $run->created_records }} <br>
-                    U: {{ $run->updated_records }}
+                    C: {{ $run->created_records }}<br>
+                    U: {{ $run->updated_records }}<br>
+                    S: {{ $run->skipped_records }}<br>
+                    F: {{ $run->failed_records }}
                   </td>
-                  <td>{{ is_array($run->error_records) ? count($run->error_records) : 0 }}</td>
+                  <td>{{ $run->failed_records }}</td>
                   <td>{{ $run->created_at->diffForHumans() }}</td>
                   <td>{{ $duration }}</td>
                 </tr>
@@ -125,6 +127,55 @@
               @endforelse
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {{-- Feed Management Actions --}}
+  <div class="row">
+    <div class="col-md-12">
+      <div class="card">
+        <div class="card-header">Feed Management</div>
+        <div class="card-body">
+          <form method="POST" action="{{ route('feeds.cleanup') }}">
+            @csrf
+            <div class="form-group">
+              <label for="feed_id">Select Feed:</label>
+              <select name="feed_id" id="feed_id" class="form-control">
+                @foreach ($feeds as $feed)
+                  <option value="{{ $feed->id }}">{{ $feed->name }}</option>
+                @endforeach
+              </select>
+            </div>
+            <button type="submit" class="btn btn-danger mt-3">Delete Feed Data</button>
+          </form>
+
+          @if(session('results'))
+            <div class="card mt-3">
+              <div class="card-header">Cleanup Results</div>
+              <div class="card-body">
+                <table class="table table-striped">
+                  <thead>
+                    <tr>
+                      <th>Website</th>
+                      <th>Status</th>
+                      <th>Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @foreach(session('results') as $result)
+                      <tr>
+                        <td>{{ $result['website'] }}</td>
+                        <td>{{ $result['status'] }}</td>
+                        <td>{{ $result['message'] }}</td>
+                      </tr>
+                    @endforeach
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          @endif
         </div>
       </div>
     </div>

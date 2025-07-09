@@ -78,17 +78,29 @@
 
                 {{-- All action buttons must be inside the loop to access the $connection variable --}}
                 <td class="text-right">
-                    <a href="#" class="btn btn-sm btn-link" title="Manage/Edit"><i class="la la-edit"></i></a>
+                    <a href="{{ route('connection.edit', $connection->id) }}" class="btn btn-sm btn-link" title="Edit"><i class="la la-edit"></i></a>
                     
+                    @php $running = $connection->latestImportRun?->status === 'processing'; @endphp
                     <form action="{{ route('connection.run', $connection->id) }}" method="POST" style="display:inline;">
                         @csrf
-                        <button type="submit" class="btn btn-sm btn-link" title="Run Now">
+                        <button type="submit" class="btn btn-sm btn-link" title="Run Now" @if($running) disabled @endif>
                             <i class="la la-play-circle"></i>
                         </button>
                     </form>
-
-                    <a href="#" class="btn btn-sm btn-link" title="Clone"><i class="la la-copy"></i></a>
-                    <a href="#" class="btn btn-sm btn-link" title="Delete"><i class="la la-trash"></i></a>
+  
+                    <form action="{{ route('connection.clone', $connection->id) }}" method="POST" style="display:inline;">
+                        @csrf
+                        <button type="submit" class="btn btn-sm btn-link" title="Clone">
+                            <i class="la la-copy"></i>
+                        </button>
+                    </form>
+                    <form action="{{ route('connection.destroy', $connection->id) }}" method="POST" style="display:inline;">
+                        @csrf
+                        @method('DELETE')
+                        <button type="submit" class="btn btn-sm btn-link text-danger" title="Delete">
+                            <i class="la la-trash"></i>
+                        </button>
+                    </form>
                 </td>
               </tr>
 

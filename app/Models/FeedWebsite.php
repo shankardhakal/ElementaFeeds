@@ -21,6 +21,8 @@ class FeedWebsite extends Pivot
         'category_mappings',
         'attribute_mappings',
         'field_mappings',
+        'category_source_field',
+        'category_delimiter',
         'update_settings',
         'schedule',
         'last_run_at',

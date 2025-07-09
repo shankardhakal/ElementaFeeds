@@ -15,6 +15,8 @@ return new class extends Migration
             $table->string('destination_product_id')->index();
             $table->string('last_updated_hash');
             $table->timestamps();
+
+            $table->unique(['source_product_identifier', 'feed_website_id'], 'unique_source_feed_constraint');
         });
     }
 

@@ -20,6 +20,7 @@ Route::group([
     // --- Standard CRUDs ---
     Route::crud('network', 'NetworkCrudController');
     Route::crud('feed', 'FeedCrudController');
+    // Note: feed.delete_products route removed - functionality available in main dashboard
     Route::crud('website', 'WebsiteCrudController');
     Route::post('website/test-connection', 'WebsiteCrudController@testConnection')->name('website.test_connection');
 
@@ -34,9 +35,29 @@ Route::group([
     Route::get('connection/create-step-4', 'ConnectionController@createStep4')->name('connection.create.step4');
     Route::post('connection/create-step-4', 'ConnectionController@storeStep4')->name('connection.store.step4');
     Route::post('connection/parse-categories', 'ConnectionController@parseCategories')->name('connection.parse_categories');
-    Route::post('connection/{id}/run', 'ConnectionController@runNow')->name('connection.run');
-
+    
     // --- Settings Routes ---
-    Route::get('setting', 'App\Http\Controllers\Admin\SettingController@index')->name('backpack.setting.index');
-    Route::post('setting', 'App\Http\Controllers\Admin\SettingController@update')->name('backpack.setting.update');
+    Route::get('setting', 'SettingController@index')->name('setting.index');
+    Route::post('setting', 'SettingController@update')->name('setting.update');
+    // Provide both POST and GET for run: GET redirects to connections list to avoid 405
+    Route::get('connection/{id}/run', function() {
+        return redirect()->route('connection.index')
+            ->with('warning', 'To start an import, click the Run button on the Connections page.');
+    });
+    Route::post('connection/{id}/run', 'ConnectionController@runNow')
+        ->middleware('throttle:1,1')
+        ->name('connection.run');
+    // Import run error logs download & status endpoint
+    Route::get('import-run/{id}/errors', 'DashboardController@errors')->name('import_run.errors');
+    Route::get('connection/{id}/status', 'ConnectionController@importStatus')->name('connection.status');
+    // Catch-all GET for individual connection to avoid 405 on direct URL
+    Route::get('connection/{id}', function($id) {
+        // Redirect direct connection show URL to the edit form
+        return redirect()->route('connection.edit', $id);
+    });
+    // Connection management: delete and clone
+    Route::delete('connection/{id}', 'ConnectionController@destroy')->name('connection.destroy');
+    Route::post('connection/{id}/clone', 'ConnectionController@clone')->name('connection.clone');
+    // Edit Connection
+    Route::get('connection/{id}/edit', 'ConnectionController@edit')->name('connection.edit');
 });

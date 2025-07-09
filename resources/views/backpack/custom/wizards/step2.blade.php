@@ -80,32 +80,33 @@ document.addEventListener('DOMContentLoaded', function () {
     const container = document.getElementById('filter-container');
     const addFilterBtn = document.getElementById('add-filter');
     const headers = @json($wizardData['sample_headers'] ?? []);
+    const existingFilters = @json($wizardData['filters'] ?? []);
     let filterIndex = 0;
 
-    addFilterBtn.addEventListener('click', function () {
+    function createFilterRow(filter = {}) {
         const filterRow = document.createElement('div');
         filterRow.classList.add('row', 'mb-2', 'align-items-center');
         filterRow.innerHTML = `
             <div class="col-md-4">
                 <select name="filters[${filterIndex}][field]" class="form-control form-control-sm">
                     <option value="">-- Select Field --</option>
-                    ${headers.map(h => `<option value="${h}">${h}</option>`).join('')}
+                    ${headers.map(h => `<option value="${h}" ${filter.field === h ? 'selected' : ''}>${h}</option>`).join('')}
                 </select>
             </div>
             <div class="col-md-3">
                 <select name="filters[${filterIndex}][operator]" class="form-control form-control-sm">
-                    <option value="equals">equals</option>
-                    <option value="not_equals">not equals</option>
-                    <option value="contains">contains</option>
-                    <option value="not_contains">does not contain</option>
-                    <option value="greater_than">is greater than</option>
-                    <option value="less_than">is less than</option>
-                    <option value="is_empty">is empty</option>
-                    <option value="is_not_empty">is not empty</option>
+                    <option value="equals" ${filter.operator === 'equals' ? 'selected' : ''}>equals</option>
+                    <option value="not_equals" ${filter.operator === 'not_equals' ? 'selected' : ''}>not equals</option>
+                    <option value="contains" ${filter.operator === 'contains' ? 'selected' : ''}>contains</option>
+                    <option value="not_contains" ${filter.operator === 'not_contains' ? 'selected' : ''}>does not contain</option>
+                    <option value="greater_than" ${filter.operator === 'greater_than' ? 'selected' : ''}>is greater than</option>
+                    <option value="less_than" ${filter.operator === 'less_than' ? 'selected' : ''}>is less than</option>
+                    <option value="is_empty" ${filter.operator === 'is_empty' ? 'selected' : ''}>is empty</option>
+                    <option value="is_not_empty" ${filter.operator === 'is_not_empty' ? 'selected' : ''}>is not empty</option>
                 </select>
             </div>
             <div class="col-md-4">
-                <input type="text" name="filters[${filterIndex}][value]" class="form-control form-control-sm" placeholder="Value">
+                <input type="text" name="filters[${filterIndex}][value]" class="form-control form-control-sm" placeholder="Value" value="${filter.value || ''}">
             </div>
             <div class="col-md-1">
                 <button type="button" class="btn btn-sm btn-danger remove-filter"><i class="la la-trash"></i></button>
@@ -113,6 +114,17 @@ document.addEventListener('DOMContentLoaded', function () {
         `;
         container.appendChild(filterRow);
         filterIndex++;
+    }
+
+    // Load existing filters if any
+    if (existingFilters && existingFilters.length > 0) {
+        existingFilters.forEach(filter => {
+            createFilterRow(filter);
+        });
+    }
+
+    addFilterBtn.addEventListener('click', function () {
+        createFilterRow();
     });
 
     container.addEventListener('click', function (e) {
