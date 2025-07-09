@@ -24,13 +24,70 @@ class ConnectionController extends Controller
     /**
      * Display the main dashboard for all connections.
      */
-    public function index()
+    public function index(Request $request)
     {
-        $connections = FeedWebsite::with(['feed', 'website', 'latestImportRun'])
-            ->orderBy('id', 'desc')
-            ->paginate(25);
+        // Validate sorting parameters
+        $allowedSorts = ['id', 'name', 'created_at', 'last_run_at', 'is_active'];
+        $sortField = in_array($request->get('sort'), $allowedSorts) ? $request->get('sort') : 'id';
+        $sortDirection = $request->get('direction', 'desc') === 'asc' ? 'asc' : 'desc';
+        
+        // Validate per-page parameter
+        $perPage = in_array($request->get('per_page'), [10, 25, 50, 100]) ? $request->get('per_page') : 25;
+        
+        $query = FeedWebsite::with([
+            'feed:id,name',
+            'website:id,name', 
+            'latestImportRun:id,feed_website_id,status,created_at'
+        ]);
+        
+        // Search functionality with optimized queries
+        if ($search = $request->get('search')) {
+            $query->where(function($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhereHas('feed', function($q) use ($search) {
+                      $q->where('name', 'like', "%{$search}%");
+                  })
+                  ->orWhereHas('website', function($q) use ($search) {
+                      $q->where('name', 'like', "%{$search}%");
+                  });
+            });
+        }
+        
+        // Status filter
+        if ($request->has('status') && $request->get('status') !== '') {
+            $query->where('is_active', $request->get('status'));
+        }
+        
+        // Import status filter
+        if ($importStatus = $request->get('import_status')) {
+            $query->whereHas('latestImportRun', function($q) use ($importStatus) {
+                $q->where('status', $importStatus);
+            });
+        }
+        
+        // Apply sorting
+        if ($sortField === 'last_run_at') {
+            // Special handling for last_run_at since it comes from relationship
+            $query->leftJoin('import_runs as latest_runs', function($join) {
+                $join->on('feed_website.id', '=', 'latest_runs.feed_website_id')
+                     ->whereRaw('latest_runs.id = (SELECT MAX(id) FROM import_runs WHERE feed_website_id = feed_website.id)');
+            })->orderBy('latest_runs.created_at', $sortDirection);
+        } else {
+            $query->orderBy($sortField, $sortDirection);
+        }
+        
+        $connections = $query->paginate($perPage);
+        
+        // Append query parameters to pagination links
+        $connections->appends($request->query());
 
         $data['connections'] = $connections;
+        $data['search'] = $search ?? '';
+        $data['status'] = $request->get('status', '');
+        $data['import_status'] = $request->get('import_status', '');
+        $data['sort'] = $sortField;
+        $data['direction'] = $sortDirection;
+        $data['per_page'] = $perPage;
         $data['title'] = 'Manage Connections';
         $data['breadcrumbs'] = [
             trans('backpack::crud.admin') => backpack_url('dashboard'),
@@ -414,5 +471,80 @@ class ConnectionController extends Controller
         
         // Jump directly to the final step since all data is pre-loaded
         return redirect()->route('connection.create.step4');
+    }
+    
+    /**
+     * Export connections data to CSV
+     */
+    public function export(Request $request)
+    {
+        $query = FeedWebsite::with(['feed', 'website', 'latestImportRun']);
+        
+        // Apply same filters as index
+        if ($search = $request->get('search')) {
+            $query->where(function($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhereHas('feed', function($q) use ($search) {
+                      $q->where('name', 'like', "%{$search}%");
+                  })
+                  ->orWhereHas('website', function($q) use ($search) {
+                      $q->where('name', 'like', "%{$search}%");
+                  });
+            });
+        }
+        
+        if ($request->has('status') && $request->get('status') !== '') {
+            $query->where('is_active', $request->get('status'));
+        }
+        
+        if ($importStatus = $request->get('import_status')) {
+            $query->whereHas('latestImportRun', function($q) use ($importStatus) {
+                $q->where('status', $importStatus);
+            });
+        }
+        
+        $connections = $query->orderBy('id', 'desc')->get();
+        
+        $filename = 'connections_export_' . date('Y-m-d_H-i-s') . '.csv';
+        
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => "attachment; filename=\"$filename\"",
+        ];
+        
+        $callback = function() use ($connections) {
+            $file = fopen('php://output', 'w');
+            
+            // CSV headers
+            fputcsv($file, [
+                'ID',
+                'Connection Name', 
+                'Source Feed',
+                'Destination Website',
+                'Status',
+                'Last Run',
+                'Last Run Status',
+                'Created At',
+                'Schedule'
+            ]);
+            
+            foreach ($connections as $connection) {
+                fputcsv($file, [
+                    $connection->id,
+                    $connection->name,
+                    $connection->feed->name ?? 'N/A',
+                    $connection->website->name ?? 'N/A',
+                    $connection->is_active ? 'Active' : 'Paused',
+                    $connection->latestImportRun?->created_at?->format('Y-m-d H:i:s') ?? 'Never',
+                    $connection->latestImportRun?->status ?? 'No Runs',
+                    $connection->created_at->format('Y-m-d H:i:s'),
+                    $connection->schedule ?? 'daily'
+                ]);
+            }
+            
+            fclose($file);
+        };
+        
+        return response()->stream($callback, 200, $headers);
     }
 }

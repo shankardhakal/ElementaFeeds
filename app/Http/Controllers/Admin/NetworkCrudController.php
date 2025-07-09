@@ -26,12 +26,19 @@ class NetworkCrudController extends CrudController
         // This will now work correctly.
         CRUD::addClause('withCount', 'feeds');
 
+        // Add ID column as the first column (leftmost) for debugging and administration
+        CRUD::column('id')
+            ->label('ID')
+            ->type('number')
+            ->orderable(true)
+            ->priority(1); // Highest priority to show first
+        
         CRUD::column('name')->label('Network Name');
         
         CRUD::addColumn([
             'name'  => 'feeds_count',
             'label' => 'Feed Count',
-            'type'  => 'text', // The result of withCount is a simple attribute: feeds_count
+            'type'  => 'text', 
         ]);
     }
 

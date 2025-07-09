@@ -28,6 +28,13 @@ class FeedCrudController extends CrudController
 
     protected function setupListOperation()
     {
+        // Add ID column as the first column (leftmost) for debugging and administration
+        CRUD::column('id')
+            ->label('ID')
+            ->type('number')
+            ->orderable(true)
+            ->priority(1); // Highest priority to show first
+            
         CRUD::column('name')->label('Feed Name');
         CRUD::column('network')->label('Network');
         CRUD::column('feed_url')->label('Feed URL')->type('url');

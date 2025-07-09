@@ -26,6 +26,7 @@ Route::group([
 
     // --- Connection Manager & Wizard Routes ---
     Route::get('connection', 'ConnectionController@index')->name('connection.index');
+    Route::get('connection/export', 'ConnectionController@export')->name('connection.export');
     Route::get('connection/create', 'ConnectionController@create')->name('connection.create');
     Route::post('connection', 'ConnectionController@storeStep1')->name('connection.store.step1');
     Route::get('connection/create-step-2', 'ConnectionController@createStep2')->name('connection.create.step2');
