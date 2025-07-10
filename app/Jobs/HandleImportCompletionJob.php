@@ -111,17 +111,28 @@ class HandleImportCompletionJob implements ShouldQueue
                 }
             }
             
-            // Schedule the ReconcileProductStatusJob to run after import completion
+            // CRITICAL: Verify actual results in WooCommerce before marking as complete
+            // This ensures dashboard statistics reflect reality, not just job completion
+            try {
+                VerifyImportResultsJob::dispatch($this->importRunId)
+                    ->delay(now()->addMinutes(2)); // Allow time for WooCommerce to index
+                
+                Log::info("Scheduled VerifyImportResultsJob for ImportRun #{$this->importRunId} to verify actual results");
+            } catch (\Exception $e) {
+                Log::error("Failed to schedule VerifyImportResultsJob for ImportRun #{$this->importRunId}: " . $e->getMessage());
+            }
+
+            // Schedule the ReconcileProductStatusJob to run after verification
             // This will attempt to publish any products left in draft status
             try {
                 // Find the connection ID from the import run
                 $feedWebsiteId = $importRun->feed_website_id;
                 
-                // Add a delay before running reconciliation to let the system stabilize
+                // Add a delay after verification to let the system stabilize
                 ReconcileProductStatusJob::dispatch($this->importRunId, $feedWebsiteId)
-                    ->delay(now()->addMinutes(1)); // Reduced delay to 1 minute for faster testing
+                    ->delay(now()->addMinutes(3)); // Run after verification completes
                 
-                Log::info("Scheduled ReconcileProductStatusJob for ImportRun #{$this->importRunId} to run in 1 minute");
+                Log::info("Scheduled ReconcileProductStatusJob for ImportRun #{$this->importRunId} to run after verification");
             } catch (\Exception $e) {
                 Log::error("Failed to schedule ReconcileProductStatusJob for ImportRun #{$this->importRunId}: " . $e->getMessage());
             }

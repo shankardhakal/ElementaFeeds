@@ -15,9 +15,9 @@ class WooCommerceApiClient implements ApiClientInterface
     protected array $credentials;
     protected int $websiteId;
 
-    // Constants for timeout and retry settings
-    private const DEFAULT_TIMEOUT = 240; // 4 minutes (increased from 3)
-    private const DEGRADED_TIMEOUT = 120; // 2 minutes (increased from 1.5)
+    // Constants for timeout and retry settings - reduced to prevent 502 errors
+    private const DEFAULT_TIMEOUT = 120; // 2 minutes (reduced from 4)
+    private const DEGRADED_TIMEOUT = 60;  // 1 minute (reduced from 2)
     private const HEALTH_CHECK_TIMEOUT = 10; // 10 seconds
     private const CACHE_TTL = 3600; // 1 hour (increased from 30 minutes)
     private const MAX_RETRIES = 4; // Increased from 3
@@ -1229,6 +1229,14 @@ class WooCommerceApiClient implements ApiClientInterface
             $batchPayload['update'] = $toUpdate;
         }
         if (!empty($batchPayload)) {
+            // Debug: Log the exact payload being sent to WooCommerce
+            Log::debug("WooCommerce batch payload", [
+                'create_count' => count($batchPayload['create'] ?? []),
+                'update_count' => count($batchPayload['update'] ?? []),
+                'sample_create_product' => !empty($batchPayload['create']) ? $batchPayload['create'][0] : null,
+                'sample_update_product' => !empty($batchPayload['update']) ? $batchPayload['update'][0] : null
+            ]);
+            
             $batchResp = $this->batchProducts($batchPayload);
             // Collect created and updated
             $created = $batchResp['created'] ?? [];
@@ -1366,196 +1374,400 @@ class WooCommerceApiClient implements ApiClientInterface
     }
 
     /**
-     * Helper method to find original product data by SKU
+     * GUPID-based upsert method that eliminates SKU conflicts
+     * This method uses Global Unique Product Identifiers stored in meta fields
+     * 
+     * @param array $products Products with GUPID in meta_data
+     * @return array Upsert results
      */
-    private function findProductInArray($products, $sku): ?array
+    public function upsertProductsByGUPID(array $products): array
     {
-        foreach ($products as $product) {
-            if (isset($product['sku']) && $product['sku'] === $sku) {
-                return $product;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Delete multiple products by their WooCommerce IDs
-     * Used for feed cleanup operations
-     *
-     * @param array $productIds Array of WooCommerce product IDs to delete
-     * @return array Response with deletion results
-     */
-    public function deleteProducts(array $productIds): array
-    {
-        if (empty($productIds)) {
+        if (empty($products)) {
             return [
                 'success' => true,
                 'total_requested' => 0,
-                'total_deleted' => 0,
+                'total_created' => 0,
+                'total_updated' => 0,
                 'failed' => [],
                 'execution_time_ms' => 0
             ];
         }
 
         $start = microtime(true);
-        $totalRequested = count($productIds);
-        $deleted = [];
+        $totalRequested = count($products);
+        $created = [];
+        $updated = [];
         $failed = [];
 
-        Log::info("Starting batch deletion of {$totalRequested} products");
+        Log::info("Starting GUPID-based upsert for {$totalRequested} products");
 
-        // Prepare batch payload for deletion
-        $batchPayload = [
-            'delete' => array_map(function($id) {
-                return ['id' => $id];
-            }, $productIds)
-        ];
-
-        try {
-            $response = $this->batchProducts($batchPayload);
+        // Step 1: Extract GUPIDs for lookup
+        $gupids = [];
+        $productsByGupid = [];
+        
+        foreach ($products as $product) {
+            $gupid = null;
             
-            // Process deletion results
-            $deleted = $response['deleted'] ?? [];
-            $failed = $response['failed'] ?? [];
+            // Extract GUPID from meta_data
+            if (isset($product['meta_data']) && is_array($product['meta_data'])) {
+                foreach ($product['meta_data'] as $meta) {
+                    if (isset($meta['key']) && $meta['key'] === 'gupid') {
+                        $gupid = $meta['value'];
+                        break;
+                    }
+                }
+            }
             
-            $totalDeleted = count($deleted);
-            $totalFailed = count($failed);
-            
-            Log::info("Batch deletion completed", [
-                'total_requested' => $totalRequested,
-                'total_deleted' => $totalDeleted,
-                'total_failed' => $totalFailed
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error("Batch deletion failed: " . $e->getMessage());
-            
-            // Mark all as failed if batch operation fails
-            foreach ($productIds as $id) {
+            if (!$gupid) {
                 $failed[] = [
-                    'id' => $id,
-                    'error' => $e->getMessage()
+                    'error' => 'Missing GUPID in meta_data',
+                    'sku' => $product['sku'] ?? 'Unknown SKU',
+                    'operation' => 'gupid_upsert',
+                    'product' => $product
                 ];
+                continue;
+            }
+            
+            $gupids[] = $gupid;
+            $productsByGupid[$gupid] = $product;
+        }
+
+        // Step 2: Get existing product map by GUPID
+        $existingProducts = [];
+        try {
+            Log::debug("Looking up GUPIDs", ['gupids' => array_slice($gupids, 0, 3), 'total_count' => count($gupids)]);
+            $existingProducts = $this->getProductIdMapByGUPIDs($gupids);
+            Log::debug("Found " . count($existingProducts) . " existing products via GUPID lookup", ['found_gupids' => array_keys($existingProducts)]);
+        } catch (\Exception $e) {
+            Log::error("GUPID lookup failed due to server errors: " . $e->getMessage());
+            
+            // For server errors, we should not proceed as we can't determine existing products
+            // Mark all products as failed and return
+            foreach ($productsByGupid as $gupid => $product) {
+                $failed[] = [
+                    'error' => 'GUPID lookup failed due to server errors: ' . $e->getMessage(),
+                    'sku' => $product['sku'] ?? 'Unknown SKU',
+                    'operation' => 'gupid_lookup_failed',
+                    'gupid' => $gupid,
+                    'product' => $product
+                ];
+            }
+            
+            return [
+                'success' => false,
+                'total_requested' => $totalRequested,
+                'total_created' => 0,
+                'total_updated' => 0,
+                'created' => [],
+                'updated' => [],
+                'failed' => $failed,
+                'execution_time_ms' => (int)((microtime(true) - $start) * 1000),
+                'error' => 'GUPID lookup failed due to server errors. Import will be retried.'
+            ];
+        }
+
+        // Step 3: Separate products into create and update batches
+        $toCreate = [];
+        $toUpdate = [];
+
+        foreach ($productsByGupid as $gupid => $product) {
+            if (isset($existingProducts[$gupid])) {
+                // Product exists, prepare for update
+                $updateProduct = $product;
+                $updateProduct['id'] = $existingProducts[$gupid];
+                
+                // CRITICAL: Remove SKU from update operations to prevent duplicate SKU errors
+                // WooCommerce doesn't allow changing SKU to an existing SKU, even if it's the same product
+                if (isset($updateProduct['sku'])) {
+                    unset($updateProduct['sku']);
+                }
+                
+                $toUpdate[] = $updateProduct;
+            } else {
+                // Product doesn't exist, prepare for creation (keep SKU for new products)
+                $toCreate[] = $product;
+            }
+        }
+
+        Log::debug("Batch separation results", [
+            'to_create' => count($toCreate),
+            'to_update' => count($toUpdate),
+            'existing_products_found' => count($existingProducts),
+            'sample_create_gupid' => !empty($toCreate) ? $this->extractGUPIDFromProduct($toCreate[0]) : null,
+            'sample_update_gupid' => !empty($toUpdate) ? $this->extractGUPIDFromProduct($toUpdate[0]) : null,
+            'sample_update_id' => !empty($toUpdate) ? ($toUpdate[0]['id'] ?? 'missing') : null
+        ]);
+
+        // Step 4: Execute batch operations
+        $batchPayload = [];
+        if (!empty($toCreate)) {
+            $batchPayload['create'] = $toCreate;
+        }
+        if (!empty($toUpdate)) {
+            $batchPayload['update'] = $toUpdate;
+        }
+        
+        if (!empty($batchPayload)) {
+            try {
+                $batchResp = $this->batchProducts($batchPayload);
+                
+                // Collect results
+                $created = $batchResp['created'] ?? [];
+                $updated = $batchResp['updated'] ?? [];
+                
+                // Handle any failures - should be rare with GUPID system
+                foreach ($batchResp['failed'] ?? [] as $failedItem) {
+                    $gupid = $this->extractGUPIDFromFailedProduct($failedItem, array_merge($toCreate, $toUpdate));
+                    $failed[] = [
+                        'error' => $failedItem['error'] ?? 'Unknown error',
+                        'sku' => $failedItem['sku'] ?? 'Unknown SKU', 
+                        'operation' => 'gupid_upsert',
+                        'gupid' => $gupid,
+                        'product' => $failedItem
+                    ];
+                }
+                
+                Log::info("GUPID-based batch upsert: created " . count($created) . ", updated " . count($updated) . ", failed " . count($failed));
+            } catch (\Exception $e) {
+                Log::error("GUPID-based batch operation failed: " . $e->getMessage());
+                
+                // For timeout errors, return the error to the calling method for batch splitting
+                $isTimeout = str_contains($e->getMessage(), '504') || str_contains($e->getMessage(), 'Gateway Time-out') || str_contains($e->getMessage(), 'cURL error 28');
+                Log::info("GUPID upsert error condition check", [
+                    'error_message' => $e->getMessage(),
+                    'is_timeout' => $isTimeout,
+                    'contains_504' => str_contains($e->getMessage(), '504'),
+                    'contains_gateway_timeout' => str_contains($e->getMessage(), 'Gateway Time-out'),
+                    'contains_curl_error' => str_contains($e->getMessage(), 'cURL error 28')
+                ]);
+                
+                if ($isTimeout) {
+                    Log::info("Returning timeout error for batch splitting");
+                    return [
+                        'success' => false,
+                        'total_requested' => $totalRequested,
+                        'total_created' => 0,
+                        'total_updated' => 0,
+                        'created' => [],
+                        'updated' => [],
+                        'failed' => [],
+                        'execution_time_ms' => (int)((microtime(true) - $start) * 1000),
+                        'error' => $e->getMessage()
+                    ];
+                }
+                
+                // For other errors, mark all products as failed
+                foreach ($productsByGupid as $gupid => $product) {
+                    $failed[] = [
+                        'error' => $e->getMessage(),
+                        'sku' => $product['sku'] ?? 'Unknown SKU',
+                        'operation' => 'gupid_upsert',
+                        'gupid' => $gupid,
+                        'product' => $product
+                    ];
+                }
             }
         }
 
         $executionTime = (int)((microtime(true) - $start) * 1000);
-        $totalDeleted = count($deleted);
-        $success = $totalDeleted > 0 || $totalRequested === 0;
+        $totalCreated = count($created);
+        $totalUpdated = count($updated);
+        $totalFailed = count($failed);
+        $success = ($totalCreated + $totalUpdated) > 0;
+
+        Log::info("GUPID-based upsert completed", [
+            'total_requested' => $totalRequested,
+            'total_created' => $totalCreated,
+            'total_updated' => $totalUpdated,
+            'total_failed' => $totalFailed,
+            'execution_time_ms' => $executionTime
+        ]);
 
         return [
             'success' => $success,
             'total_requested' => $totalRequested,
-            'total_deleted' => $totalDeleted,
-            'deleted' => $deleted,
+            'total_created' => $totalCreated,
+            'total_updated' => $totalUpdated,
+            'created' => $created,
+            'updated' => $updated,
             'failed' => $failed,
-            'execution_time_ms' => $executionTime
+            'execution_time_ms' => $executionTime,
+            'error' => $totalFailed > 0 ? 'Some products failed' : null
         ];
     }
 
     /**
-     * Find stale products based on timestamp metadata for stateless reconciliation
-     *
-     * @param int $connectionId The feed connection ID to filter by
-     * @param int $cutoffTimestamp Products older than this timestamp are considered stale
-     * @param int $perPage Products per page (max 100)
-     * @return array Array of stale product IDs or product data
+     * Get product ID map by GUPIDs
+     * 
+     * @param array $gupids Array of GUPIDs to lookup
+     * @return array Map of GUPID => product_id
      */
-    public function findStaleProducts(int $connectionId, int $cutoffTimestamp, int $perPage = 100): array
+    protected function getProductIdMapByGUPIDs(array $gupids, int $maxRetries = 3, int $initialDelay = 2000): array
     {
-        Log::info("Finding stale products for connection #{$connectionId} with cutoff timestamp {$cutoffTimestamp}");
+        if (empty($gupids)) {
+            return [];
+        }
 
-        $staleProducts = [];
-        $page = 1;
-        $maxPages = 50; // Safety limit to prevent infinite loops
+        $map = [];
+        $batchSize = 25; // Reduced from 100 to 25 to prevent 502 errors
+        $batches = array_chunk($gupids, $batchSize);
+        $hasServerErrors = false;
 
-        do {
-            try {
-                // Get products with ElementaFeeds metadata
-                $products = $this->makeRequest('products', [
-                    'per_page' => min($perPage, 100),
-                    'page' => $page,
-                    'status' => 'publish', // Only check published products
-                    'meta_key' => '_elementa_feed_connection_id',
-                    'meta_value' => $connectionId,
-                ]);
-
-                if (empty($products)) {
-                    break;
-                }
-
-                foreach ($products as $product) {
-                    if ($this->isProductStale($product, $cutoffTimestamp)) {
-                        $staleProducts[] = [
-                            'id' => $product['id'],
-                            'sku' => $product['sku'] ?? '',
-                            'name' => $product['name'] ?? '',
-                            'last_seen' => $this->getProductLastSeen($product)
+        foreach ($batches as $batch) {
+            $retryCount = 0;
+            $maxRetries = 3;
+            
+            while ($retryCount < $maxRetries) {
+                try {
+                    // CRITICAL FIX: Need to search ALL products with GUPID meta, not just first 100
+                    // WooCommerce REST API doesn't support arrays in meta_value with IN comparison
+                    // We need to paginate through all products to find all matches
+                    
+                    $page = 1;
+                    $perPage = 100;
+                    $foundInBatch = [];
+                    
+                    do {
+                        $params = [
+                            'per_page' => $perPage,
+                            'page' => $page,
+                            'meta_key' => 'gupid',  // Only get products that have gupid meta
+                            'orderby' => 'id',
+                            'order' => 'desc'
                         ];
+
+                        Log::debug("GUPID lookup query page {$page}", ['batch_gupids' => array_slice($batch, 0, 3), 'batch_size' => count($batch)]);
+                        $response = $this->makeRequest('products', $params);
+                        
+                        if (!is_array($response) || empty($response)) {
+                            break; // No more products
+                        }
+                        
+                        Log::debug("GUPID lookup response page {$page}", ['response_count' => count($response)]);
+                        
+                        $sampleMetaKeys = [];
+                        foreach ($response as $product) {
+                            $productId = $product['id'] ?? null;
+                            $metaData = $product['meta_data'] ?? [];
+                            
+                            // Log sample metadata for debugging (only for first page)
+                            if ($page === 1 && count($sampleMetaKeys) < 3) {
+                                $productMetaKeys = array_column($metaData, 'key');
+                                $sampleMetaKeys[] = [
+                                    'product_id' => $productId,
+                                    'meta_keys' => $productMetaKeys,
+                                    'has_gupid' => in_array('gupid', $productMetaKeys)
+                                ];
+                            }
+                            
+                            if ($productId) {
+                                // Find the GUPID in meta_data and check if it matches our batch
+                                foreach ($metaData as $meta) {
+                                    if (isset($meta['key']) && $meta['key'] === 'gupid') {
+                                        $gupid = $meta['value'];
+                                        // Check if this GUPID is in our current batch
+                                        if (in_array($gupid, $batch)) {
+                                            $map[$gupid] = $productId;
+                                            $foundInBatch[] = $gupid;
+                                            Log::debug("Found matching GUPID", ['gupid' => substr($gupid, 0, 10) . '...', 'product_id' => $productId]);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if ($page === 1) {
+                            Log::debug("Sample product metadata", ['sample_meta_keys' => $sampleMetaKeys]);
+                        }
+                        
+                        // If we found all GUPIDs in this batch, we can stop early
+                        if (count($foundInBatch) === count($batch)) {
+                            Log::debug("Found all GUPIDs in batch, stopping early", ['found_count' => count($foundInBatch), 'batch_size' => count($batch)]);
+                            break;
+                        }
+                        
+                        // If we got less than perPage results, we've reached the end
+                        if (count($response) < $perPage) {
+                            break;
+                        }
+                        
+                        $page++;
+                        
+                        // Add small delay between pages to prevent overwhelming the server
+                        usleep(100000); // 100ms delay between pages
+                        
+                    } while ($page <= 50); // Safety limit to prevent infinite loops
+                    
+                    // If we get here, the request succeeded
+                    break;
+                    
+                } catch (\Exception $e) {
+                    $retryCount++;
+                    
+                    // Check if this is a server error that we should retry
+                    if (str_contains($e->getMessage(), '502') || str_contains($e->getMessage(), '503') || str_contains($e->getMessage(), '504')) {
+                        if ($retryCount < $maxRetries) {
+                            Log::warning("GUPID lookup failed with server error, retrying ({$retryCount}/{$maxRetries}): " . $e->getMessage());
+                            sleep(2); // Wait 2 seconds before retrying
+                            continue;
+                        } else {
+                            Log::error("GUPID lookup failed after {$maxRetries} retries due to server errors: " . $e->getMessage());
+                            $hasServerErrors = true;
+                            break; // Exit the retry loop for this batch
+                        }
+                    } else {
+                        Log::warning("Failed to lookup GUPID batch: " . $e->getMessage());
+                        break; // For other errors, continue with empty results
                     }
                 }
-
-                $page++;
-                
-                // Break if we got fewer products than requested (last page)
-                if (count($products) < $perPage) {
-                    break;
-                }
-
-            } catch (\Throwable $e) {
-                Log::error("Error finding stale products on page {$page}", [
-                    'connection_id' => $connectionId,
-                    'page' => $page,
-                    'error' => $e->getMessage()
-                ]);
-                break;
             }
+            
+            // Add small delay between batches to prevent overwhelming the server
+            if (count($batches) > 1) {
+                usleep(250000); // 250ms delay between batches
+            }
+        }
 
-        } while ($page <= $maxPages);
+        // If any batch had server errors, throw an exception
+        if ($hasServerErrors) {
+            throw new \Exception("Server errors prevent GUPID lookup. Please try again later.");
+        }
 
-        Log::info("Found {count} stale products for connection #{$connectionId}", [
-            'count' => count($staleProducts),
-            'connection_id' => $connectionId,
-            'pages_scanned' => $page - 1
-        ]);
-
-        return $staleProducts;
+        return $map;
     }
 
     /**
-     * Check if a product is stale based on its last seen timestamp
-     *
-     * @param array $product WooCommerce product data
-     * @param int $cutoffTimestamp
-     * @return bool
+     * Extract GUPID from a failed product response
+     * 
+     * @param array $failedProduct The failed product data
+     * @param array $originalProducts Original product array to search
+     * @return string|null The GUPID if found
      */
-    protected function isProductStale(array $product, int $cutoffTimestamp): bool
+    protected function extractGUPIDFromFailedProduct(array $failedProduct, array $originalProducts): ?string
     {
-        $lastSeen = $this->getProductLastSeen($product);
-        
-        if ($lastSeen === null) {
-            // If no timestamp found, consider it stale
-            return true;
+        // Try to extract from the failed product itself
+        if (isset($failedProduct['meta_data']) && is_array($failedProduct['meta_data'])) {
+            foreach ($failedProduct['meta_data'] as $meta) {
+                if (isset($meta['key']) && $meta['key'] === 'gupid') {
+                    return $meta['value'];
+                }
+            }
         }
 
-        return $lastSeen < $cutoffTimestamp;
-    }
-
-    /**
-     * Get the last seen timestamp from product metadata
-     *
-     * @param array $product WooCommerce product data
-     * @return int|null Timestamp or null if not found
-     */
-    protected function getProductLastSeen(array $product): ?int
-    {
-        if (!isset($product['meta_data']) || !is_array($product['meta_data'])) {
-            return null;
-        }
-
-        foreach ($product['meta_data'] as $meta) {
-            if (isset($meta['key']) && $meta['key'] === '_elementa_last_seen_timestamp') {
-                return (int) ($meta['value'] ?? 0);
+        // Fallback: search in original products by SKU
+        $sku = $failedProduct['sku'] ?? null;
+        if ($sku) {
+            foreach ($originalProducts as $product) {
+                if (($product['sku'] ?? null) === $sku) {
+                    if (isset($product['meta_data']) && is_array($product['meta_data'])) {
+                        foreach ($product['meta_data'] as $meta) {
+                            if (isset($meta['key']) && $meta['key'] === 'gupid') {
+                                return $meta['value'];
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1563,100 +1775,20 @@ class WooCommerceApiClient implements ApiClientInterface
     }
 
     /**
-     * Find products by connection ID (utility method for debugging/monitoring)
-     *
-     * @param int $connectionId The feed connection ID
-     * @param int $limit Maximum number of products to return
-     * @return array Array of products belonging to the connection
+     * Extract GUPID from a product's meta_data
+     * 
+     * @param array $product The product data
+     * @return string|null The GUPID if found
      */
-    public function findProductsByConnection(int $connectionId, int $limit = 100): array
+    protected function extractGUPIDFromProduct(array $product): ?string
     {
-        try {
-            $products = $this->makeRequest('products', [
-                'per_page' => min($limit, 100),
-                'meta_key' => '_elementa_feed_connection_id',
-                'meta_value' => $connectionId,
-            ]);
-
-            return $products ?? [];
-
-        } catch (\Throwable $e) {
-            Log::error("Error finding products by connection #{$connectionId}", [
-                'connection_id' => $connectionId,
-                'error' => $e->getMessage()
-            ]);
-            return [];
-        }
-    }
-
-    /**
-     * Get statistics about products managed by ElementaFeeds
-     *
-     * @return array Statistics about managed products
-     */
-    public function getElementaProductStats(): array
-    {
-        try {
-            // Get total count of products with ElementaFeeds metadata
-            $response = $this->makeRequest('products', [
-                'per_page' => 1,
-                'meta_key' => '_elementa_feed_connection_id',
-            ], 'GET', true); // Return full response to get headers
-
-            $totalProducts = (int) ($response['headers']['X-WP-Total'][0] ?? 0);
-
-            // Get sample of recent products to analyze
-            $recentProducts = $this->makeRequest('products', [
-                'per_page' => 50,
-                'orderby' => 'modified',
-                'order' => 'desc',
-                'meta_key' => '_elementa_feed_connection_id',
-            ]);
-
-            $connectionCounts = [];
-            $oldestLastSeen = null;
-            $newestLastSeen = null;
-
-            foreach ($recentProducts as $product) {
-                // Count by connection
-                $connectionId = null;
-                $lastSeen = null;
-
-                foreach ($product['meta_data'] ?? [] as $meta) {
-                    if ($meta['key'] === '_elementa_feed_connection_id') {
-                        $connectionId = (int) $meta['value'];
-                    } elseif ($meta['key'] === '_elementa_last_seen_timestamp') {
-                        $lastSeen = (int) $meta['value'];
-                    }
-                }
-
-                if ($connectionId) {
-                    $connectionCounts[$connectionId] = ($connectionCounts[$connectionId] ?? 0) + 1;
-                }
-
-                if ($lastSeen) {
-                    if ($oldestLastSeen === null || $lastSeen < $oldestLastSeen) {
-                        $oldestLastSeen = $lastSeen;
-                    }
-                    if ($newestLastSeen === null || $lastSeen > $newestLastSeen) {
-                        $newestLastSeen = $lastSeen;
-                    }
+        if (isset($product['meta_data'])) {
+            foreach ($product['meta_data'] as $meta) {
+                if (isset($meta['key']) && $meta['key'] === 'gupid') {
+                    return $meta['value'];
                 }
             }
-
-            return [
-                'total_managed_products' => $totalProducts,
-                'products_by_connection' => $connectionCounts,
-                'oldest_last_seen' => $oldestLastSeen ? date('Y-m-d H:i:s', $oldestLastSeen) : null,
-                'newest_last_seen' => $newestLastSeen ? date('Y-m-d H:i:s', $newestLastSeen) : null,
-                'sample_size' => count($recentProducts)
-            ];
-
-        } catch (\Throwable $e) {
-            Log::error("Error getting ElementaFeeds product statistics", [
-                'error' => $e->getMessage()
-            ]);
-            return ['error' => $e->getMessage()];
         }
+        return null;
     }
 }

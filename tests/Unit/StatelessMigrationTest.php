@@ -188,10 +188,10 @@ class StatelessMigrationTest extends TestCase
         
         // Find the timestamp metadata
         $timestampMeta = collect($productMetadata['meta_data'])
-            ->firstWhere('key', '_elementa_last_seen_timestamp');
+            ->firstWhere('key', 'elementa_last_seen_timestamp');
         
         $connectionMeta = collect($productMetadata['meta_data'])
-            ->firstWhere('key', '_elementa_feed_connection_id');
+            ->firstWhere('key', 'elementa_feed_connection_id');
         
         $this->assertNotNull($timestampMeta);
         $this->assertNotNull($connectionMeta);

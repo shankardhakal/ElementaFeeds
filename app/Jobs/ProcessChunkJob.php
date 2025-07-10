@@ -27,7 +27,7 @@ use Throwable;
  * This job processes a single chunk of feed data.
  *
  * Key Tasks:
- * - Transforms the chunk data using TransformationService.
+ * - Transforms the chunk data using the TransformationService.
  * - Sends batch requests to the destination platform's API for product creation or updates.
  * - Handles errors and logs them for reconciliation.
  */
@@ -152,6 +152,25 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
     public function uniqueId(): string
     {
         return $this->importRunId . '-' . $this->chunkFilePath;
+    }
+
+    /**
+     * Generate a Global Unique Product Identifier (GUPID)
+     * 
+     * This creates a collision-free identifier by combining the feed connection ID
+     * with the product's source ID and hashing the result.
+     *
+     * @param int $connectionId The feed connection ID  
+     * @param string $sourceId The product's original identifier from the source feed
+     * @return string The generated GUPID (40-character SHA-1 hash)
+     */
+    protected function generateGUPID(int $connectionId, string $sourceId): string
+    {
+        // Create composite key: connection_id:source_id
+        $compositeKey = $connectionId . ':' . $sourceId;
+        
+        // Generate SHA-1 hash for consistent 40-character identifier
+        return sha1($compositeKey);
     }
 
     /**
@@ -289,21 +308,38 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                         return;
                     }
 
-                    // Step 2: Generate SKUs from the transformed payloads.
-                    $skusToFetch = [];
+                    // Step 2: Generate GUPIDs and enhance products with unique identifiers
+                    $gupidsToFetch = [];
                     foreach ($transformedPayloads as $key => $payload) {
-                        $uniqueIdentifier = $this->generateUniqueIdentifier($payload, $connection->feed->name);
-                        if (!empty($uniqueIdentifier)) {
-                            // Assign the generated SKU back to the payload.
-                            $transformedPayloads[$key]['sku'] = $uniqueIdentifier;
-                            $skusToFetch[] = $uniqueIdentifier;
-                        } else {
-                            // If we couldn't generate a SKU, this product can't be processed.
+                        $sourceId = $payload['id'] ?? $payload['sku'] ?? null;
+                        if (empty($sourceId)) {
                             unset($transformedPayloads[$key]);
-                            Log::warning('Skipping product because a unique SKU could not be generated.', [
+                            Log::warning('Skipping product because source ID could not be determined.', [
                                 'payload' => $payload
                             ]);
+                            continue;
                         }
+
+                        // Generate GUPID: Global Unique Product Identifier
+                        $gupid = $this->generateGUPID($connection->id, $sourceId);
+                        
+                        // Keep the original SKU if it exists, or use source ID
+                        $originalSku = $payload['sku'] ?? $sourceId;
+                        
+                        // Assign GUPID and source information
+                        $transformedPayloads[$key]['sku'] = $originalSku; // Keep original SKU for display
+                        $transformedPayloads[$key]['meta_data'] = [
+                            ['key' => 'feed_name', 'value' => $connection->feed->name],
+                            ['key' => 'import_run_id', 'value' => $this->importRunId],
+                            ['key' => 'import_date', 'value' => date('Y-m-d H:i:s')],
+                            // GUPID-based system for unique identification
+                            ['key' => 'gupid', 'value' => $gupid],
+                            ['key' => 'elementa_source_id', 'value' => $sourceId],
+                            ['key' => 'elementa_feed_connection_id', 'value' => $connection->id],
+                            ['key' => 'elementa_last_seen_timestamp', 'value' => now()->timestamp]
+                        ];
+                        
+                        $gupidsToFetch[] = $gupid;
                     }
                     
                     // Re-index the array after unsetting elements
@@ -314,14 +350,8 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                         $transformedPayloads[$key]['status'] = 'publish';
                         $transformedPayloads[$key]['catalog_visibility'] = 'visible';
                         $transformedPayloads[$key]['stock_status'] = $payload['stock_status'] ?? 'instock';
-                        $transformedPayloads[$key]['meta_data'] = [
-                            ['key' => 'feed_name', 'value' => $connection->feed->name],
-                            ['key' => 'import_run_id', 'value' => $this->importRunId],
-                            ['key' => 'import_date', 'value' => date('Y-m-d H:i:s')],
-                            // Stateless reconciliation metadata
-                            ['key' => '_elementa_last_seen_timestamp', 'value' => now()->timestamp],
-                            ['key' => '_elementa_feed_connection_id', 'value' => $connection->id]
-                        ];
+                        // Preserve existing meta_data that was set in Step 2
+                        // $transformedPayloads[$key]['meta_data'] is already set, no need to overwrite
                     }
 
                     $skippedCount = count($products) - count($transformedPayloads);
@@ -332,6 +362,17 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                     if (empty($transformedPayloads)) {
                         Log::info("No products to create or update for ImportRun #{$this->importRunId}.");
                         return;
+                    }
+
+                    // Debug: Log a sample product with its metadata to verify it's preserved
+                    if (!empty($transformedPayloads)) {
+                        $sampleProduct = $transformedPayloads[0];
+                        Log::debug("Sample product with metadata before upsert", [
+                            'sku' => $sampleProduct['sku'] ?? 'unknown',
+                            'has_meta_data' => isset($sampleProduct['meta_data']),
+                            'meta_data_count' => isset($sampleProduct['meta_data']) ? count($sampleProduct['meta_data']) : 0,
+                            'meta_data' => $sampleProduct['meta_data'] ?? null
+                        ]);
                     }
 
                     // Step 4: Use the new bulletproof upsert method
@@ -735,17 +776,68 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
 
         try {
             $apiClient = new WooCommerceApiClient($connection->website);
-            $response = $apiClient->upsertProducts($products);
+            $response = $apiClient->upsertProductsByGUPID($products);
 
             Log::info("WooCommerce product upsert response", [
                 'success' => $response['success'],
                 'total_requested' => $response['total_requested'],
                 'total_created' => $response['total_created'],
                 'total_updated' => $response['total_updated'],
-                'execution_time_ms' => $response['execution_time_ms'] ?? 'N/A'
+                'execution_time_ms' => $response['execution_time_ms'] ?? 'N/A',
+                'error' => $response['error'] ?? null
             ]);
 
-            // Update counts atomically - stateless approach no longer needs tracking
+            // --- Insert: handle batch timeout by splitting ---
+            $error = $response['error'] ?? null;
+            Log::info("ProcessChunkJob batch splitting check", [
+                'success' => $response['success'],
+                'count' => $count,
+                'error' => $error,
+                'has_error' => !empty($error),
+                'is_string' => is_string($error),
+                'contains_504' => is_string($error) && str_contains($error, '504'),
+                'contains_gateway_timeout' => is_string($error) && str_contains($error, 'Gateway Time-out'),
+                'contains_curl_error' => is_string($error) && str_contains($error, 'cURL error 28'),
+                'contains_lookup_failed' => is_string($error) && str_contains($error, 'GUPID lookup failed')
+            ]);
+            
+            // Handle GUPID lookup failures - release job back to queue
+            if (!$response['success'] && is_string($error) && (
+                str_contains($error, 'GUPID lookup failed due to server errors') || 
+                str_contains($error, 'Server errors prevent GUPID lookup')
+            )) {
+                Log::warning("GUPID lookup failed due to server errors. Releasing job back to queue for retry in 5 minutes.", [
+                    'import_run_id' => $importRun->id,
+                    'error' => $error,
+                ]);
+                
+                // Reduce chunk size for future imports to prevent 502 errors
+                \App\Jobs\ChunkFeedJob::reduceRecommendedChunkSize($connection->website->id);
+                
+                $this->release(300); // Release back to queue for 5 minutes
+                return;
+            }
+            
+            if (!$response['success'] && $count > 1 && is_string($error) && (
+                str_contains($error, '504') || str_contains($error, 'Gateway Time-out') || str_contains($error, 'cURL error 28')
+            )) {
+                Log::warning("Detected timeout in GUPID upsert batch of {$count} products. Splitting batch and retrying.", [
+                    'import_run_id' => $importRun->id,
+                    'error' => $error,
+                ]);
+                // Reduce batch size for future chunks
+                $this->reduceRecommendedBatchSize($connection->website->id);
+                // Split the batch
+                $midpoint = (int) ceil($count / 2);
+                $batch1 = array_slice($products, 0, $midpoint);
+                $batch2 = array_slice($products, $midpoint);
+                $this->processProductUpsert($batch1, $connection, $importRun);
+                $this->processProductUpsert($batch2, $connection, $importRun);
+                return;
+            }
+            // --- End insert ---
+
+            // Update counts atomically
             \DB::transaction(function() use ($importRun, $response) {
                 if (($response['total_created'] ?? 0) > 0) {
                     $importRun->increment('created_records', $response['total_created']);
@@ -755,7 +847,6 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                 }
             });
 
-            // Log success details
             if (($response['total_created'] ?? 0) > 0) {
                 Log::info("Successfully created {$response['total_created']} products for ImportRun #{$this->importRunId}");
             }
@@ -771,17 +862,25 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
             }
 
         } catch (\Throwable $e) {
-            // Check for timeout or other server errors that suggest splitting the batch
+            // Check if this is a server error that indicates we should retry later
+            if (str_contains($e->getMessage(), 'Server errors prevent GUPID lookup')) {
+                Log::warning("Server errors preventing GUPID lookup. Releasing job back to queue for retry.", [
+                    'import_run_id' => $this->importRunId,
+                    'error' => $e->getMessage()
+                ]);
+                $this->release(300); // Release back to queue for 5 minutes
+                return;
+            }
+            
+            // Existing splitting-on-exception logic
             if ($count > 1 && (str_contains($e->getMessage(), '504 Gateway Time-out') || str_contains($e->getMessage(), 'cURL error 28'))) {
                 Log::warning("Caught a timeout error upserting a batch of {$count} products. Splitting batch and retrying.", [
                     'import_run_id' => $this->importRunId,
                     'error' => $e->getMessage()
                 ]);
 
-                // Reduce recommended batch size for future jobs
                 $this->reduceRecommendedBatchSize($connection->website->id);
 
-                // Split the batch and retry
                 $midpoint = (int)ceil($count / 2);
                 $batch1 = array_slice($products, 0, $midpoint);
                 $batch2 = array_slice($products, $midpoint);
@@ -789,11 +888,79 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                 $this->processProductUpsert($batch1, $connection, $importRun);
                 $this->processProductUpsert($batch2, $connection, $importRun);
             } else {
-                // For other errors, log them as failed records
                 Log::error("Failed to upsert a batch of {$count} products for ImportRun #{$this->importRunId}: " . $e->getMessage());
                 $this->logBatchError($e->getMessage(), $products);
                 $importRun->increment('failed_records', $count);
             }
+        }
+    }
+
+    /**
+     * Handle failed upsert operations from WooCommerce API response
+     * 
+     * @param array $failedProducts Array of failed product responses
+     * @param ImportRun $importRun Current import run instance
+     */
+    protected function handleUpsertErrors(array $failedProducts, ImportRun $importRun): void
+    {
+        Log::info("handleUpsertErrors called", [
+            'import_run_id' => $importRun->id,
+            'failed_products_count' => count($failedProducts)
+        ]);
+        
+        $errorMessages = [];
+        
+        foreach ($failedProducts as $index => $failedProduct) {
+            $error = $failedProduct['error'] ?? 'Unknown error';
+            $sku = $failedProduct['sku'] ?? 'Unknown SKU';
+            $operation = $failedProduct['operation'] ?? 'upsert';
+            
+            // Normalize error structure
+            if (is_array($error)) {
+                $errorCode = $error['code'] ?? 'unknown';
+                $errorMessage = $error['message'] ?? 'Unknown error';
+            } else {
+                $errorCode = 'unknown';
+                $errorMessage = (string) $error;
+            }
+            
+            $errorMessages[] = [
+                'time' => now()->format('H:i:s'),
+                'error' => "Product {$operation} failed: {$errorCode} - {$errorMessage}",
+                'count' => 1,
+                'samples' => [$sku]
+            ];
+            
+            Log::warning("Product upsert failed", [
+                'sku' => $sku,
+                'operation' => $operation,
+                'error_code' => $errorCode,
+                'error_message' => $errorMessage
+            ]);
+        }
+        
+        // Update failed count
+        $importRun->increment('failed_records', count($failedProducts));
+        
+        // Store error records if we have any
+        if (!empty($errorMessages)) {
+            $existingErrors = $importRun->error_records ?? [];
+            if (is_string($existingErrors)) {
+                $existingErrors = json_decode($existingErrors, true) ?? [];
+            }
+            
+            $updatedErrors = array_merge($existingErrors, $errorMessages);
+            
+            // Limit the total number of stored errors to prevent the column from growing too large
+            if (count($updatedErrors) > 50) {
+                $updatedErrors = array_slice($updatedErrors, -50); // Keep only the 50 most recent errors
+            }
+            
+            $importRun->update(['error_records' => $updatedErrors]);
+            
+            Log::info("Updated error_records for ImportRun #{$importRun->id}", [
+                'total_errors' => count($updatedErrors)
+            ]);
         }
     }
 

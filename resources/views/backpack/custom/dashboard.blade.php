@@ -111,10 +111,10 @@
                   <td>{{ $run->feedWebsite->website->name ?? 'N/A' }}</td>
                   <td><span class="{{ $statusClass }}">{{ Str::title(str_replace('_', ' ', $run->status)) }}</span></td>
                   <td>
-                    C: {{ $run->created_records }}<br>
-                    U: {{ $run->updated_records }}<br>
-                    S: {{ $run->skipped_records }}<br>
-                    F: {{ $run->failed_records }}
+                    Created: {{ $run->created_records }}<br>
+                    Updated: {{ $run->updated_records }}<br>
+                    Skipped: {{ $run->skipped_records }}<br>
+                    Failed: {{ $run->failed_records }}
                   </td>
                   <td>{{ $run->failed_records }}</td>
                   <td>{{ $run->created_at->diffForHumans() }}</td>

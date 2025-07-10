@@ -658,7 +658,7 @@ Successfully transitioned from database-centric to stateless timestamp-based rec
 
 **Key Changes:**
 1. **Removed SyndicatedProduct Table** - Eliminates database bloat for millions of products
-2. **WooCommerce Metadata Tagging** - Products tagged with `_elementa_last_seen_timestamp` and `_elementa_feed_connection_id`
+2. **WooCommerce Metadata Tagging** - Products tagged with `elementa_last_seen_timestamp` and `elementa_feed_connection_id`
 3. **Stateless ProcessChunkJob** - No local tracking, pure WooCommerce operations
 4. **Off-peak Reconciliation** - Separate cleanup process based on UI-configured rules
 5. **Enterprise Monitoring** - Health checks and system metrics
@@ -680,8 +680,8 @@ The ElementaFeeds application has been successfully transitioned from a database
        ['key' => 'import_run_id', 'value' => $this->importRunId],
        ['key' => 'import_date', 'value' => date('Y-m-d H:i:s')],
        // Stateless reconciliation metadata
-       ['key' => '_elementa_last_seen_timestamp', 'value' => now()->timestamp],
-       ['key' => '_elementa_feed_connection_id', 'value' => $connection->id]
+       ['key' => 'elementa_last_seen_timestamp', 'value' => now()->timestamp],
+       ['key' => 'elementa_feed_connection_id', 'value' => $connection->id]
    ];
    ```
 
@@ -752,7 +752,7 @@ The system is now ready for cron-based scheduling:
 - Import performance degraded with large datasets
 
 **After (Stateless):**
-- Products tagged with `_elementa_last_seen_timestamp` in WooCommerce
+- Products tagged with `elementa_last_seen_timestamp` in WooCommerce
 - Independent, scheduled cleanup process
 - Unlimited scalability potential
 - Fast, lightweight imports regardless of scale
@@ -765,5 +765,3 @@ The system is now ready for cron-based scheduling:
 4. **Multi-Site Safety** - Consider additional validation for products used by multiple feeds (if needed)
 
 **The stateless, timestamp-based reconciliation architecture is now PRODUCTION READY and successfully operational.**
-
----

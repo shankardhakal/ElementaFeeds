@@ -13,6 +13,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use League\Csv\Reader;
@@ -37,7 +38,9 @@ class ChunkFeedJob implements ShouldQueue
     public int $importRunId;
     public int $feedWebsiteConnectionId;
     public string $sourceFilePath;
-    protected const CHUNK_SIZE = 100; // For WooCommerce batch API
+    protected const CHUNK_SIZE = 25; // Reduced from 100 to 25 for better reliability
+    protected const MIN_CHUNK_SIZE = 10; // Minimum chunk size 
+    protected const MAX_CHUNK_SIZE = 50; // Maximum chunk size (reduced from 100)
 
     /**
      * Create a new job instance.
@@ -206,6 +209,10 @@ class ChunkFeedJob implements ShouldQueue
             throw new \Exception("Source file does not exist at path: {$sourceFilePath}");
         }
 
+        // Get dynamic chunk size based on website performance
+        $dynamicChunkSize = $this->getRecommendedChunkSize($connection->website->id);
+        Log::info("Using dynamic chunk size: {$dynamicChunkSize} for ImportRun #{$this->importRunId}");
+
         // Eagerly load mappings and rules to avoid repeated access inside the loop.
         $rawCategoryMappings = $connection->category_mappings ?? [];
         
@@ -281,7 +288,7 @@ class ChunkFeedJob implements ShouldQueue
             }
 
             $buffer[] = $record;
-            if (count($buffer) >= self::CHUNK_SIZE) {
+            if (count($buffer) >= $dynamicChunkSize) {
                 $chunkFileName = "chunk_{$chunkIndex}.json";
                 $chunkFilePath = "{$chunkDirectory}/{$chunkFileName}";
                 File::put($chunkFilePath, json_encode(array_values($buffer)));
@@ -315,6 +322,39 @@ class ChunkFeedJob implements ShouldQueue
         ]);
 
         return $chunkFiles;
+    }
+
+    /**
+     * Get recommended chunk size based on website performance
+     */
+    protected function getRecommendedChunkSize(int $websiteId): int
+    {
+        $cacheKey = "recommended_chunk_size:website:{$websiteId}";
+        $recommendedSize = Cache::get($cacheKey, self::CHUNK_SIZE);
+        
+        // Ensure it's within bounds
+        $recommendedSize = max(self::MIN_CHUNK_SIZE, min(self::MAX_CHUNK_SIZE, $recommendedSize));
+        
+        Log::info("Using chunk size {$recommendedSize} for website #{$websiteId}");
+        
+        return $recommendedSize;
+    }
+
+    /**
+     * Reduce recommended chunk size for a website when server errors occur
+     */
+    public static function reduceRecommendedChunkSize(int $websiteId): void
+    {
+        $cacheKey = "recommended_chunk_size:website:{$websiteId}";
+        $currentSize = Cache::get($cacheKey, self::CHUNK_SIZE);
+        
+        // Reduce by 30% but never below minimum
+        $newSize = max(self::MIN_CHUNK_SIZE, (int)($currentSize * 0.7));
+        
+        if ($newSize < $currentSize) {
+            Cache::put($cacheKey, $newSize, 60 * 60 * 24); // Store for 24 hours
+            Log::warning("Reduced recommended chunk size for website #{$websiteId} from {$currentSize} to {$newSize} due to server errors");
+        }
     }
 
 }

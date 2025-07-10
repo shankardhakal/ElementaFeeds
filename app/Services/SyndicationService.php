@@ -41,9 +41,9 @@ class SyndicationService
 
         // Add stateless metadata for reconciliation
         $productData['meta_data'] = array_merge($productData['meta_data'] ?? [], [
-            ['key' => '_elementa_last_seen_timestamp', 'value' => now()->timestamp],
-            ['key' => '_elementa_feed_connection_id', 'value' => $connection->id],
-            ['key' => '_elementa_source_identifier', 'value' => $sourceIdentifier]
+            ['key' => 'elementa_last_seen_timestamp', 'value' => now()->timestamp],
+            ['key' => 'elementa_feed_connection_id', 'value' => $connection->id],
+            ['key' => 'elementa_source_identifier', 'value' => $sourceIdentifier]
         ]);
 
         // Log the final data payload
