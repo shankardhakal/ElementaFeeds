@@ -26,19 +26,16 @@ class DeleteFeedProductsJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $feedId;
-    public int $websiteId;
+    public int $connectionId;
 
     /**
      * Create a new job instance.
      *
-     * @param int $feedId
-     * @param int $websiteId
+     * @param int $connectionId The feed_website connection ID
      */
-    public function __construct(int $feedId, int $websiteId)
+    public function __construct(int $connectionId)
     {
-        $this->feedId = $feedId;
-        $this->websiteId = $websiteId;
+        $this->connectionId = $connectionId;
     }
 
     /**
@@ -49,43 +46,40 @@ class DeleteFeedProductsJob implements ShouldQueue
     public function handle()
     {
         try {
-            $feed = Feed::findOrFail($this->feedId);
-            $feedWebsite = FeedWebsite::where('feed_id', $this->feedId)
-                ->where('website_id', $this->websiteId)
-                ->firstOrFail();
+            $connection = FeedWebsite::with(['feed', 'website'])
+                ->findOrFail($this->connectionId);
 
-            $apiClient = new WooCommerceApiClient($feedWebsite->website);
+            $apiClient = new WooCommerceApiClient($connection->website);
 
-            // Find all products with the feed_name metadata
-            $productsToDelete = $apiClient->findProductsByMetadata('feed_name', $feed->name);
+            // Find all products with this connection ID using the new stateless approach
+            $productsToDelete = $apiClient->findProductsByConnectionId($this->connectionId);
 
             if (empty($productsToDelete)) {
-                Log::info("No products found for feed '{$feed->name}' (ID: {$this->feedId}) on website ID {$this->websiteId} to delete.");
+                Log::info("No products found for connection #{$this->connectionId} ({$connection->feed->name} → {$connection->website->name}) to delete.");
                 return;
             }
 
-            $productIdsToDelete = array_column($productsToDelete, 'id');
-            Log::info("Found " . count($productIdsToDelete) . " products to delete for feed '{$feed->name}' (ID: {$this->feedId}) on website ID {$this->websiteId}.");
+            Log::info("Found " . count($productsToDelete) . " products to delete for connection #{$this->connectionId} ({$connection->feed->name} → {$connection->website->name}).");
 
             // Delete products in batches
-            $batchSize = $this->getRecommendedBatchSize($this->websiteId);
-            $batches = array_chunk($productIdsToDelete, $batchSize);
+            $batchSize = $this->getRecommendedBatchSize($connection->website_id);
+            $batches = array_chunk($productsToDelete, $batchSize);
 
             foreach ($batches as $batchIndex => $batch) {
                 try {
-                    Log::info("Deleting batch #" . ($batchIndex + 1) . " with " . count($batch) . " products for feed '{$feed->name}'");
+                    Log::info("Deleting batch #" . ($batchIndex + 1) . " with " . count($batch) . " products for connection #{$this->connectionId}");
 
                     // The API expects an array of IDs for deletion.
                     $apiClient->batchProducts(['delete' => $batch]);
 
-                    Log::info("Successfully deleted batch #" . ($batchIndex + 1) . " for feed '{$feed->name}'");
+                    Log::info("Successfully deleted batch #" . ($batchIndex + 1) . " for connection #{$this->connectionId}");
                 } catch (\Throwable $e) {
-                    Log::error("Failed to delete batch #" . ($batchIndex + 1) . " for feed '{$feed->name}': " . $e->getMessage());
-                    // Optional: Decide if you want to retry the job or skip the batch
+                    Log::error("Failed to delete batch #" . ($batchIndex + 1) . " for connection #{$this->connectionId}: " . $e->getMessage());
+                    // Continue with other batches instead of failing completely
                 }
             }
         } catch (\Throwable $e) {
-            Log::error("Failed to delete products for feed ID {$this->feedId} on website ID {$this->websiteId}: " . $e->getMessage());
+            Log::error("Failed to delete products for connection ID {$this->connectionId}: " . $e->getMessage());
             $this->fail($e);
         }
     }

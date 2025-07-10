@@ -1791,4 +1791,63 @@ class WooCommerceApiClient implements ApiClientInterface
         }
         return null;
     }
+
+    /**
+     * Find products by connection ID using the stateless meta_data approach.
+     *
+     * @param int $connectionId The feed_website connection ID
+     * @return array List of product IDs matching the connection ID
+     */
+    public function findProductsByConnectionId(int $connectionId): array
+    {
+        $productIds = [];
+        $page = 1;
+        $perPage = 100;
+        
+        do {
+            $params = [
+                'meta_key' => 'elementa_feed_connection_id',
+                'meta_value' => (string)$connectionId,
+                'per_page' => $perPage,
+                'page' => $page,
+                'status' => 'any' // Include all product statuses
+            ];
+
+            try {
+                Log::debug("Searching for products with connection ID {$connectionId}, page {$page}");
+                $response = $this->makeRequest('products', $params);
+                
+                if (!is_array($response) || empty($response)) {
+                    break; // No more products
+                }
+                
+                // Extract product IDs
+                foreach ($response as $product) {
+                    if (isset($product['id'])) {
+                        $productIds[] = $product['id'];
+                    }
+                }
+                
+                Log::debug("Found " . count($response) . " products on page {$page} for connection {$connectionId}");
+                
+                // If we got less than perPage results, we've reached the end
+                if (count($response) < $perPage) {
+                    break;
+                }
+                
+                $page++;
+                
+                // Add small delay between pages to prevent overwhelming the server
+                usleep(100000); // 100ms delay
+                
+            } catch (\Exception $e) {
+                Log::error("Failed to find products by connection ID {$connectionId} on page {$page}: " . $e->getMessage());
+                break;
+            }
+            
+        } while ($page <= 50); // Safety limit
+        
+        Log::info("Found total " . count($productIds) . " products for connection ID {$connectionId}");
+        return $productIds;
+    }
 }

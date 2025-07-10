@@ -4,7 +4,9 @@ namespace App\Providers;
 
 use Illuminate\Support\ServiceProvider;
 use App\Models\Website; // Add this line
+use App\Models\Feed; // Add this line
 use App\Observers\WebsiteObserver; // Add this line
+use App\Observers\FeedObserver; // Add this line
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Blade;
@@ -34,6 +36,8 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Website::observe(WebsiteObserver::class);
+        Feed::observe(FeedObserver::class);
+        Feed::observe(FeedObserver::class);
 
         RateLimiter::for('import-connection', function (object $job) {
             // The $job is an instance of ProcessChunkJob, which has a public connectionId property.
