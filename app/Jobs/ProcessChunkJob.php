@@ -5,7 +5,6 @@ namespace App\Jobs;
 use Illuminate\Bus\Batchable;
 use App\Models\FeedWebsite;
 use App\Models\ImportRun;
-use App\Models\SyndicatedProduct;
 use App\Models\Website;
 use App\Services\TransformationService;
 use App\Services\FilterService;
@@ -191,10 +190,6 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                     $importRun = ImportRun::findOrFail($this->importRunId);
                     $connection = FeedWebsite::findOrFail($this->connectionId);
 
-                    // Log the raw chunk data for debugging
-                    $rawChunkChecking = file_get_contents($this->chunkFilePath);
-                    Log::debug("Raw chunk data for {$this->chunkFilePath}: " . $rawChunkChecking);
-
                     // Perform API health check before proceeding
                     if (!$this->checkApiHealthBeforeProcessing($connection->website)) {
                         Log::warning("Skipping processing for now due to API health issues. Will retry later.");
@@ -322,7 +317,10 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                         $transformedPayloads[$key]['meta_data'] = [
                             ['key' => 'feed_name', 'value' => $connection->feed->name],
                             ['key' => 'import_run_id', 'value' => $this->importRunId],
-                            ['key' => 'import_date', 'value' => date('Y-m-d H:i:s')]
+                            ['key' => 'import_date', 'value' => date('Y-m-d H:i:s')],
+                            // Stateless reconciliation metadata
+                            ['key' => '_elementa_last_seen_timestamp', 'value' => now()->timestamp],
+                            ['key' => '_elementa_feed_connection_id', 'value' => $connection->id]
                         ];
                     }
 
@@ -363,172 +361,7 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
         }
     }
 
-    // (createBatchWithBackoff handles empty array guard)
-
-    /**
-     * Process a batch of product creation requests.
-     *
-     * @param array $productsToCreate
-     * @param FeedWebsite $connection
-     * @param ImportRun $importRun
-     */
-    protected function processProductCreation(array $productsToCreate, FeedWebsite $connection, ImportRun $importRun)
-    {
-        // Delegate to backoff logic
-        $response = $this->createBatchWithBackoff($productsToCreate, $connection, $importRun);
-
-        // Add some extra debug info for the first product
-        if (!empty($productsToCreate[0])) {
-            $firstProduct = $productsToCreate[0];
-            Log::debug("Sample product creation payload", [
-                'name' => $firstProduct['name'] ?? 'N/A',
-                'sku' => $firstProduct['sku'] ?? 'N/A',
-            ]);
-        }
-
-        Log::info("WooCommerce product creation response", [
-            'success' => $response['success'] ?? false,
-            'total_requested' => $response['total_requested'],
-            'total_created' => $response['total_created'],
-            'execution_time_ms' => $response['execution_time_ms'] ?? 'N/A'
-        ]);
-
-        if (($response['total_created'] ?? 0) > 0) {
-            \DB::transaction(function() use ($importRun, $response) {
-                $importRun->increment('created_records', $response['total_created']);
-            });
-            Log::info("Successfully created {$response['total_created']} products for ImportRun #{$this->importRunId}");
-            
-            // Create API client for verification
-            $apiClient = new WooCommerceApiClient($connection->website);
-            $this->verifyCreatedProducts($response['created'], $apiClient);
-        }
-
-        // Handle products that failed validation within the batch
-        if (!empty($response['failed'])) {
-            \DB::transaction(function() use ($response, $importRun) {
-                $this->handleBatchCreationErrors($response['failed'], $importRun);
-            });
-        }
-    }
-
-    protected function processProductUpdates(array $productsToUpdate, FeedWebsite $connection, ImportRun $importRun)
-    {
-        $apiClient = new WooCommerceApiClient($connection->website);
-        $count = count($productsToUpdate);
-
-        if ($count === 0) {
-            return;
-        }
-
-        Log::info("Attempting to update {$count} products for ImportRun #{$this->importRunId}");
-
-        try {
-            if (!empty($productsToUpdate[0])) {
-                $firstProduct = $productsToUpdate[0];
-                Log::debug("Sample product update payload", [
-                    'id' => $firstProduct['id'] ?? 'N/A',
-                    'sku' => $firstProduct['sku'] ?? 'N/A'
-                ]);
-            }
-
-            $response = $apiClient->updateProducts($productsToUpdate);
-
-            Log::info("WooCommerce product update response", [
-                'success' => $response['success'],
-                'total_requested' => $response['total_requested'],
-                'total_updated' => $response['total_updated'],
-                'execution_time_ms' => $response['execution_time_ms'] ?? 'N/A'
-            ]);
-
-            if (($response['total_updated'] ?? 0) > 0) {
-                \DB::transaction(function() use ($importRun, $response) {
-                    $importRun->increment('updated_records', $response['total_updated']);
-                });
-                Log::info("Successfully updated {$response['total_updated']} products for ImportRun #{$this->importRunId}");
-            }
-
-            // Handle products that failed validation within the batch
-            if (!empty($response['failed'])) {
-                \DB::transaction(function() use ($response, $productsToUpdate, $connection, $importRun) {
-                    $this->handleBatchErrors($response['failed'], $productsToUpdate, $connection, $importRun);
-                });
-            }
-
-        } catch (\Throwable $e) {
-            // Check for timeout or other server errors that suggest splitting the batch
-            if ($count > 1 && (str_contains($e->getMessage(), '504 Gateway Time-out') || str_contains($e->getMessage(), 'cURL error 28'))) {
-                Log::warning("Caught a timeout error updating a batch of {$count} products. Splitting batch and retrying.", [
-                    'import_run_id' => $this->importRunId,
-                    'error' => $e->getMessage()
-                ]);
-
-                // Reduce recommended batch size for future jobs
-                $this->reduceRecommendedBatchSize($connection->website->id);
-
-                // Split the batch and retry
-                $midpoint = (int)ceil($count / 2);
-                $batch1 = array_slice($productsToUpdate, 0, $midpoint);
-                $batch2 = array_slice($productsToUpdate, $midpoint);
-
-                $this->processProductUpdates($batch1, $connection, $importRun);
-                $this->processProductUpdates($batch2, $connection, $importRun);
-            } else {
-                // For other errors, log them as failed records
-                Log::error("Failed to update a batch of {$count} products for ImportRun #{$this->importRunId}: " . $e->getMessage());
-                $this->logBatchError($e->getMessage(), $productsToUpdate);
-                $importRun->increment('failed_records', $count);
-            }
-        }
-    }
-
-    /**
-     * Verify a sample of created products to ensure they exist in WooCommerce.
-     *
-     * @param array $createdProducts The array of created products from the API response.
-     * @param WooCommerceApiClient $apiClient The API client.
-     */
-    private function verifyCreatedProducts(array $createdProducts, WooCommerceApiClient $apiClient): void
-    {
-        if (empty($createdProducts)) {
-            return;
-        }
-
-        $samplesToVerify = min(3, count($createdProducts));
-        $verificationSuccesses = 0;
-        $verificationFailures = 0;
-
-        for ($i = 0; $i < $samplesToVerify; $i++) {
-            $product = $createdProducts[$i];
-            if (empty($product['id']) || empty($product['sku'])) {
-                continue;
-            }
-
-            try {
-                $verifyResult = $apiClient->findProductBySKU($product['sku']);
-                if ($verifyResult) {
-                    Log::info("Verified product exists: ID {$product['id']}, SKU {$product['sku']}, Status: {$verifyResult['status']}");
-                    $verificationSuccesses++;
-                } else {
-                    Log::warning("Could not verify product exists despite successful creation: ID {$product['id']}, SKU {$product['sku']}");
-                    $verificationFailures++;
-                }
-            } catch (\Throwable $e) {
-                Log::warning("Exception during product verification: " . $e->getMessage());
-                $verificationFailures++;
-            }
-        }
-
-        Log::info("Product verification summary", [
-            'successes' => $verificationSuccesses,
-            'failures' => $verificationFailures,
-            'samples_checked' => $samplesToVerify
-        ]);
-
-        if ($verificationFailures === $samplesToVerify && $samplesToVerify > 0) {
-            Log::error("All product verifications failed! Products may not be properly saved in WooCommerce.");
-        }
-    }
+    // Legacy methods removed - only upsert logic is used now for bulletproof operation
 
     protected function handleBatchErrors(array $errors, array $batch, FeedWebsite $connection, ImportRun $importRun)
     {
@@ -912,7 +745,7 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                 'execution_time_ms' => $response['execution_time_ms'] ?? 'N/A'
             ]);
 
-            // Update counts atomically
+            // Update counts atomically - stateless approach no longer needs tracking
             \DB::transaction(function() use ($importRun, $response) {
                 if (($response['total_created'] ?? 0) > 0) {
                     $importRun->increment('created_records', $response['total_created']);
@@ -964,48 +797,4 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
         }
     }
 
-    /**
-     * Handle failed product upserts from the upsert response
-     */
-    protected function handleUpsertErrors(array $failedProducts, ImportRun $importRun): void
-    {
-        Log::info("handleUpsertErrors called", [
-            'import_run_id' => $importRun->id,
-            'failed_products_count' => count($failedProducts)
-        ]);
-        
-        $errorMessages = [];
-        
-        foreach ($failedProducts as $failedProduct) {
-            $error = $failedProduct['error'] ?? 'Unknown error';
-            $sku = $failedProduct['sku'] ?? 'Unknown SKU';
-            $operation = $failedProduct['operation'] ?? 'upsert';
-            
-            $errorMessages[] = [
-                'time' => now()->format('H:i:s'),
-                'error' => "Product {$operation} failed: {$error}",
-                'count' => 1,
-                'samples' => [$sku]
-            ];
-            
-            Log::warning("Product {$operation} failed", [
-                'sku' => $sku,
-                'error' => $error,
-                'operation' => $operation
-            ]);
-        }
-        
-        // Update failed count and error records
-        $importRun->increment('failed_records', count($failedProducts));
-        
-        if (!empty($errorMessages)) {
-            $existingErrors = $importRun->error_records ?? [];
-            if (is_string($existingErrors)) {
-                $existingErrors = json_decode($existingErrors, true) ?? [];
-            }
-            
-            $updatedErrors = array_merge($existingErrors, $errorMessages);
-            $importRun->update(['error_records' => $updatedErrors]);
-        }
-    }
 }

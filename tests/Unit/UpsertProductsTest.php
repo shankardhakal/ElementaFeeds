@@ -137,43 +137,31 @@ class UpsertProductsTest extends TestCase
                     [
                         'error' => [
                             'code' => 'product_invalid_sku',
-                            'message' => 'Invalid or duplicated SKU.'
+                            'message' => 'SKU-koodia (conflict-sku) jo hakutaulukossa'
                         ]
                     ]
                 ]
             ]);
 
-        // Mock the helper method that extracts SKU from error
-        $apiClient->shouldReceive('extractSkuFromError')
-            ->once()
-            ->andReturn('conflict-sku');
-
-        // Mock the findProductBySKU method
+        // Mock the findProductBySKU method for the retry attempt
         $apiClient->shouldReceive('findProductBySKU')
             ->once()
             ->with('conflict-sku')
             ->andReturn(['id' => 789, 'sku' => 'conflict-sku']);
 
+        // Mock the updateProduct method (single product update)
+        $apiClient->shouldReceive('updateProduct')
+            ->once()
+            ->with(789, [
+                'name' => 'Conflict Product',
+                'sku' => 'conflict-sku',
+                'price' => '39.99'
+            ])
+            ->andReturn(['id' => 789, 'sku' => 'conflict-sku']);
+
         // Mock the update call for the SKU conflict resolution
         $apiClient->shouldReceive('updateProducts')
-            ->once()
-            ->with([
-                [
-                    'id' => 789,
-                    'name' => 'Conflict Product',
-                    'sku' => 'conflict-sku',
-                    'price' => '39.99'
-                ]
-            ])
-            ->andReturn([
-                'success' => true,
-                'total_requested' => 1,
-                'total_updated' => 1,
-                'updated' => [
-                    ['id' => 789, 'sku' => 'conflict-sku']
-                ],
-                'failed' => []
-            ]);
+            ->never(); // This shouldn't be called since we're doing individual updates
 
         // Test products array
         $products = [

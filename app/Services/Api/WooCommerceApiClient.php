@@ -58,44 +58,98 @@ class WooCommerceApiClient implements ApiClientInterface
         $this->makeRequest("products/{$destinationId}", $data, 'PUT');
     }
 
-    public function batchProducts(array $products): array
+    public function batchProducts(array $batchPayload): array
     {
-        // --- BEGIN: Complex batch logic (kept for reference) ---
-        /*
-        // The full dynamic/circuit breaker batch logic is commented out for reference.
-        // ...existing code from previous implementation...
-        */
-        // --- END: Complex batch logic ---
-
         // --- BEGIN: Simple direct implementation ---
         $start = microtime(true);
-        $response = $this->post('products/batch', [
-            'create' => $products
+        
+        // Debug logging for payload
+        Log::debug("WooCommerce batchProducts request payload", [
+            'create_count' => count($batchPayload['create'] ?? []),
+            'update_count' => count($batchPayload['update'] ?? []),
+            'delete_count' => count($batchPayload['delete'] ?? []),
+            'payload' => json_encode($batchPayload, JSON_PRETTY_PRINT)
+        ]);
+        
+        $response = $this->makeRequest('products/batch', $batchPayload, 'POST');
+
+        // Debug logging for response
+        Log::debug("WooCommerce batchProducts response", [
+            'response' => json_encode($response, JSON_PRETTY_PRINT)
         ]);
 
-        $created = $response['create'] ?? [];
-        
-        // Filter out failed products - only count products that were actually created
-        $successfullyCreated = array_filter($created, function($product) {
-            return !empty($product['id']) && $product['id'] > 0 && !isset($product['error']);
-        });
-        
-        $failed = array_filter($created, function($product) {
-            return empty($product['id']) || $product['id'] <= 0 || isset($product['error']);
-        });
-        
-        $success = !empty($successfullyCreated);
-        $error = $response['error'] ?? null;
-
-        return [
-            'success' => $success,
-            'total_requested' => count($products),
-            'total_created' => count($successfullyCreated),
-            'created' => $successfullyCreated,
-            'failed' => $failed,
-            'error' => $error,
+        $result = [
+            'success' => false,
+            'total_requested' => 0,
             'execution_time_ms' => (int)((microtime(true) - $start) * 1000)
         ];
+
+        // Handle create operations
+        if (isset($batchPayload['create'])) {
+            $created = $response['create'] ?? [];
+            
+            // Filter out failed products - only count products that were actually created
+            $successfullyCreated = array_filter($created, function($product) {
+                return !empty($product['id']) && $product['id'] > 0 && !isset($product['error']);
+            });
+            
+            $failed = array_filter($created, function($product) {
+                return empty($product['id']) || $product['id'] <= 0 || isset($product['error']);
+            });
+            
+            $result['create'] = $successfullyCreated;
+            $result['total_created'] = count($successfullyCreated);
+            $result['created'] = $successfullyCreated;
+            $result['failed'] = ($result['failed'] ?? []) + $failed;
+            $result['total_requested'] += count($batchPayload['create']);
+            $result['success'] = !empty($successfullyCreated);
+        }
+
+        // Handle update operations
+        if (isset($batchPayload['update'])) {
+            $updated = $response['update'] ?? [];
+            
+            // Filter out failed products - only count products that were actually updated
+            $successfullyUpdated = array_filter($updated, function($product) {
+                return !empty($product['id']) && $product['id'] > 0 && !isset($product['error']);
+            });
+            
+            $updateFailed = array_filter($updated, function($product) {
+                return empty($product['id']) || $product['id'] <= 0 || isset($product['error']);
+            });
+            
+            $result['update'] = $successfullyUpdated;
+            $result['total_updated'] = count($successfullyUpdated);
+            $result['updated'] = $successfullyUpdated;
+            $result['failed'] = ($result['failed'] ?? []) + $updateFailed;
+            $result['total_requested'] += count($batchPayload['update']);
+            $result['success'] = $result['success'] || !empty($successfullyUpdated);
+        }
+
+        // Handle delete operations
+        if (isset($batchPayload['delete'])) {
+            $deleted = $response['delete'] ?? [];
+            
+            // Filter out failed deletions
+            $successfullyDeleted = array_filter($deleted, function($product) {
+                return !empty($product['id']) && !isset($product['error']);
+            });
+            
+            $deleteFailed = array_filter($deleted, function($product) {
+                return empty($product['id']) || isset($product['error']);
+            });
+            
+            $result['delete'] = $successfullyDeleted;
+            $result['total_deleted'] = count($successfullyDeleted);
+            $result['deleted'] = $successfullyDeleted;
+            $result['failed'] = ($result['failed'] ?? []) + $deleteFailed;
+            $result['total_requested'] += count($batchPayload['delete']);
+            $result['success'] = $result['success'] || !empty($successfullyDeleted);
+        }
+
+        $result['error'] = $response['error'] ?? null;
+        
+        return $result;
         // --- END: Simple direct implementation ---
     }
     
@@ -246,15 +300,8 @@ class WooCommerceApiClient implements ApiClientInterface
      */
     public function createProducts(array $products): array
     {
-        // --- BEGIN: Complex createProducts logic (kept for reference) ---
-        /*
-        // The full preprocessing, fallback, and verification logic is commented out for reference.
-        // ...existing code from previous implementation...
-        */
-        // --- END: Complex createProducts logic ---
-
         // --- BEGIN: Simple direct implementation ---
-        return $this->batchProducts($products);
+        return $this->batchProducts(['create' => $products]);
         // --- END: Simple direct implementation ---
     }
 
@@ -1156,8 +1203,10 @@ class WooCommerceApiClient implements ApiClientInterface
             $sku = $product['sku'] ?? null;
             if (!$sku) {
                 $failed[] = [
-                    'product' => $product,
-                    'error' => 'Missing SKU'
+                    'error' => 'Missing SKU',
+                    'sku' => 'Unknown SKU',
+                    'operation' => 'upsert',
+                    'product' => $product
                 ];
                 continue;
             }
@@ -1171,52 +1220,24 @@ class WooCommerceApiClient implements ApiClientInterface
             }
         }
 
-        // Step 4: Process updates first (if any)
-        if (!empty($toUpdate)) {
-            try {
-                $updateResponse = $this->updateProducts($toUpdate);
-                $updated = array_merge($updated, $updateResponse['updated'] ?? []);
-                $failed = array_merge($failed, $updateResponse['failed'] ?? []);
-                Log::info("Updated " . count($updateResponse['updated'] ?? []) . " products");
-            } catch (\Exception $e) {
-                Log::error("Batch update failed: " . $e->getMessage());
-                foreach ($toUpdate as $product) {
-                    $failed[] = [
-                        'product' => $product,
-                        'error' => 'Update failed: ' . $e->getMessage()
-                    ];
-                }
-            }
-        }
-
-        // Step 5: Process creates with bulletproof error handling
+        // Steps 4 & 5: Unified batch create+update
+        $batchPayload = [];
         if (!empty($toCreate)) {
-            try {
-                $createResponse = $this->createProducts($toCreate);
-                
-                // Handle successful creates
-                if (!empty($createResponse['created'])) {
-                    $created = array_merge($created, $createResponse['created']);
-                }
-                
-                // Handle failed creates (including SKU conflicts)
-                if (!empty($createResponse['failed'])) {
-                    foreach ($createResponse['failed'] as $failedProduct) {
-                        $this->handleFailedCreate($failedProduct, $toCreate, $created, $updated, $failed);
-                    }
-                }
-                
-                Log::info("Created " . count($created) . " new products");
-                
-            } catch (\Exception $e) {
-                Log::error("Batch create failed: " . $e->getMessage());
-                foreach ($toCreate as $product) {
-                    $failed[] = [
-                        'product' => $product,
-                        'error' => 'Create failed: ' . $e->getMessage()
-                    ];
-                }
+            $batchPayload['create'] = $toCreate;
+        }
+        if (!empty($toUpdate)) {
+            $batchPayload['update'] = $toUpdate;
+        }
+        if (!empty($batchPayload)) {
+            $batchResp = $this->batchProducts($batchPayload);
+            // Collect created and updated
+            $created = $batchResp['created'] ?? [];
+            $updated = $batchResp['updated'] ?? [];
+            // Handle any failures
+            foreach ($batchResp['failed'] ?? [] as $failedItem) {
+                $this->handleFailedCreate($failedItem, array_merge($toCreate, $toUpdate), $created, $updated, $failed);
             }
+            Log::info("Batch upsert: created " . count($created) . ", updated " . count($updated) . ", failed " . count($failed));
         }
 
         $executionTime = (int)((microtime(true) - $start) * 1000);
@@ -1250,39 +1271,59 @@ class WooCommerceApiClient implements ApiClientInterface
      */
     private function handleFailedCreate($failedProduct, $originalProducts, &$created, &$updated, &$failed): void
     {
-        $errorMessage = '';
-        if (isset($failedProduct['error']['message'])) {
-            $errorMessage = $failedProduct['error']['message'];
+        // Normalize raw error into code and message
+        $errorRaw = $failedProduct['error'] ?? '';
+        if (is_array($errorRaw)) {
+            $errorMessage = $errorRaw['message'] ?? json_encode($errorRaw);
+            $errorCode = $errorRaw['code'] ?? 'unknown_error';
+        } else {
+            $errorMessage = (string) $errorRaw;
+            $errorCode = 'error';
         }
-        
-        // Check if this is a SKU conflict (product already exists)
-        if (strpos($errorMessage, 'jo hakutaulukossa') !== false || 
-            strpos($errorMessage, 'already exists') !== false ||
-            (isset($failedProduct['error']['code']) && $failedProduct['error']['code'] === 'woocommerce_rest_product_not_created')) {
+        // If SKU conflict, treat as update (product exists remotely)
+        if ($errorCode === 'woocommerce_rest_product_not_created' || stripos($errorMessage, 'already exists') !== false) {
+            $sku = $this->extractSkuFromFailedProduct($failedProduct, $originalProducts) ?: 'Unknown SKU';
             
-            // Try to find and update the existing product
-            $sku = $this->extractSkuFromFailedProduct($failedProduct, $originalProducts);
-            if ($sku) {
-                try {
-                    $existingProduct = $this->findProductBySKU($sku);
-                    if ($existingProduct && isset($existingProduct['id'])) {
-                        // Find the original product data
-                        $originalProduct = $this->findProductInArray($originalProducts, $sku);
-                        if ($originalProduct) {
-                            $this->updateProduct($existingProduct['id'], $originalProduct);
-                            $updated[] = array_merge($originalProduct, ['id' => $existingProduct['id']]);
-                            Log::info("Converted failed create to successful update for SKU: {$sku}");
-                            return;
-                        }
-                    }
-                } catch (\Exception $updateError) {
-                    Log::warning("Failed to update existing product {$sku}: " . $updateError->getMessage());
+            // Instead of creating fake entries, try to find the actual product
+            try {
+                $existingProduct = $this->findProductBySKU($sku);
+                if ($existingProduct) {
+                    // Add the real existing product to updated array
+                    $updated[] = $existingProduct;
+                    Log::info("Converted SKU-conflict create to update for SKU {$sku}, found existing product ID: {$existingProduct['id']}");
+                } else {
+                    // If we can't find it, log as failed instead of creating fake data
+                    $failed[] = [
+                        'error' => "SKU conflict but could not locate existing product: {$errorCode}: {$errorMessage}",
+                        'sku' => $sku,
+                        'operation' => 'create_conflict',
+                        'product' => $failedProduct,
+                    ];
+                    Log::warning("SKU conflict for {$sku} but could not locate existing product");
                 }
+            } catch (\Exception $e) {
+                $failed[] = [
+                    'error' => "SKU conflict resolution failed: " . $e->getMessage(),
+                    'sku' => $sku,
+                    'operation' => 'create_conflict',
+                    'product' => $failedProduct,
+                ];
+                Log::error("Failed to resolve SKU conflict for {$sku}: " . $e->getMessage());
             }
+            return;
         }
         
-        // If we couldn't handle it as an update, mark as failed
-        $failed[] = $failedProduct;
+        // If we couldn't convert to an update, record as a failure
+        $sku = $this->extractSkuFromFailedProduct($failedProduct, $originalProducts)
+            ?: array_shift(array_column($originalProducts, 'sku')) 
+            ?: 'Unknown SKU';
+        // Append normalized failure entry
+        $failed[] = [
+            'error'     => "{$errorCode}: {$errorMessage}",
+            'sku'       => is_string($sku) ? $sku : json_encode($sku),
+            'operation' => 'create',
+            'product'   => $failedProduct,
+        ];
     }
 
     /**
@@ -1290,15 +1331,37 @@ class WooCommerceApiClient implements ApiClientInterface
      */
     private function extractSkuFromFailedProduct($failedProduct, $originalProducts): ?string
     {
-        // Try to extract SKU from error message
+        // Try to extract SKU from error message first
         if (isset($failedProduct['error']['message'])) {
             $message = $failedProduct['error']['message'];
             if (preg_match('/SKU-koodia \(([^)]+)\)/', $message, $matches)) {
                 return $matches[1];
             }
+            // Try other common SKU patterns
+            if (preg_match('/SKU[:\s]*([^\s,]+)/', $message, $matches)) {
+                return $matches[1];
+            }
         }
         
-        // Fallback: try to match by index or other means
+        // If the failed product has an index, try to match with original products
+        if (isset($failedProduct['index']) && isset($originalProducts[$failedProduct['index']])) {
+            return $originalProducts[$failedProduct['index']]['sku'] ?? null;
+        }
+        
+        // If failed product has SKU directly
+        if (isset($failedProduct['sku'])) {
+            return $failedProduct['sku'];
+        }
+        
+        // Last resort: try to find in original products by name
+        if (isset($failedProduct['name'])) {
+            foreach ($originalProducts as $product) {
+                if (isset($product['name']) && $product['name'] === $failedProduct['name']) {
+                    return $product['sku'] ?? null;
+                }
+            }
+        }
+        
         return null;
     }
 
@@ -1313,5 +1376,287 @@ class WooCommerceApiClient implements ApiClientInterface
             }
         }
         return null;
+    }
+
+    /**
+     * Delete multiple products by their WooCommerce IDs
+     * Used for feed cleanup operations
+     *
+     * @param array $productIds Array of WooCommerce product IDs to delete
+     * @return array Response with deletion results
+     */
+    public function deleteProducts(array $productIds): array
+    {
+        if (empty($productIds)) {
+            return [
+                'success' => true,
+                'total_requested' => 0,
+                'total_deleted' => 0,
+                'failed' => [],
+                'execution_time_ms' => 0
+            ];
+        }
+
+        $start = microtime(true);
+        $totalRequested = count($productIds);
+        $deleted = [];
+        $failed = [];
+
+        Log::info("Starting batch deletion of {$totalRequested} products");
+
+        // Prepare batch payload for deletion
+        $batchPayload = [
+            'delete' => array_map(function($id) {
+                return ['id' => $id];
+            }, $productIds)
+        ];
+
+        try {
+            $response = $this->batchProducts($batchPayload);
+            
+            // Process deletion results
+            $deleted = $response['deleted'] ?? [];
+            $failed = $response['failed'] ?? [];
+            
+            $totalDeleted = count($deleted);
+            $totalFailed = count($failed);
+            
+            Log::info("Batch deletion completed", [
+                'total_requested' => $totalRequested,
+                'total_deleted' => $totalDeleted,
+                'total_failed' => $totalFailed
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Batch deletion failed: " . $e->getMessage());
+            
+            // Mark all as failed if batch operation fails
+            foreach ($productIds as $id) {
+                $failed[] = [
+                    'id' => $id,
+                    'error' => $e->getMessage()
+                ];
+            }
+        }
+
+        $executionTime = (int)((microtime(true) - $start) * 1000);
+        $totalDeleted = count($deleted);
+        $success = $totalDeleted > 0 || $totalRequested === 0;
+
+        return [
+            'success' => $success,
+            'total_requested' => $totalRequested,
+            'total_deleted' => $totalDeleted,
+            'deleted' => $deleted,
+            'failed' => $failed,
+            'execution_time_ms' => $executionTime
+        ];
+    }
+
+    /**
+     * Find stale products based on timestamp metadata for stateless reconciliation
+     *
+     * @param int $connectionId The feed connection ID to filter by
+     * @param int $cutoffTimestamp Products older than this timestamp are considered stale
+     * @param int $perPage Products per page (max 100)
+     * @return array Array of stale product IDs or product data
+     */
+    public function findStaleProducts(int $connectionId, int $cutoffTimestamp, int $perPage = 100): array
+    {
+        Log::info("Finding stale products for connection #{$connectionId} with cutoff timestamp {$cutoffTimestamp}");
+
+        $staleProducts = [];
+        $page = 1;
+        $maxPages = 50; // Safety limit to prevent infinite loops
+
+        do {
+            try {
+                // Get products with ElementaFeeds metadata
+                $products = $this->makeRequest('products', [
+                    'per_page' => min($perPage, 100),
+                    'page' => $page,
+                    'status' => 'publish', // Only check published products
+                    'meta_key' => '_elementa_feed_connection_id',
+                    'meta_value' => $connectionId,
+                ]);
+
+                if (empty($products)) {
+                    break;
+                }
+
+                foreach ($products as $product) {
+                    if ($this->isProductStale($product, $cutoffTimestamp)) {
+                        $staleProducts[] = [
+                            'id' => $product['id'],
+                            'sku' => $product['sku'] ?? '',
+                            'name' => $product['name'] ?? '',
+                            'last_seen' => $this->getProductLastSeen($product)
+                        ];
+                    }
+                }
+
+                $page++;
+                
+                // Break if we got fewer products than requested (last page)
+                if (count($products) < $perPage) {
+                    break;
+                }
+
+            } catch (\Throwable $e) {
+                Log::error("Error finding stale products on page {$page}", [
+                    'connection_id' => $connectionId,
+                    'page' => $page,
+                    'error' => $e->getMessage()
+                ]);
+                break;
+            }
+
+        } while ($page <= $maxPages);
+
+        Log::info("Found {count} stale products for connection #{$connectionId}", [
+            'count' => count($staleProducts),
+            'connection_id' => $connectionId,
+            'pages_scanned' => $page - 1
+        ]);
+
+        return $staleProducts;
+    }
+
+    /**
+     * Check if a product is stale based on its last seen timestamp
+     *
+     * @param array $product WooCommerce product data
+     * @param int $cutoffTimestamp
+     * @return bool
+     */
+    protected function isProductStale(array $product, int $cutoffTimestamp): bool
+    {
+        $lastSeen = $this->getProductLastSeen($product);
+        
+        if ($lastSeen === null) {
+            // If no timestamp found, consider it stale
+            return true;
+        }
+
+        return $lastSeen < $cutoffTimestamp;
+    }
+
+    /**
+     * Get the last seen timestamp from product metadata
+     *
+     * @param array $product WooCommerce product data
+     * @return int|null Timestamp or null if not found
+     */
+    protected function getProductLastSeen(array $product): ?int
+    {
+        if (!isset($product['meta_data']) || !is_array($product['meta_data'])) {
+            return null;
+        }
+
+        foreach ($product['meta_data'] as $meta) {
+            if (isset($meta['key']) && $meta['key'] === '_elementa_last_seen_timestamp') {
+                return (int) ($meta['value'] ?? 0);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Find products by connection ID (utility method for debugging/monitoring)
+     *
+     * @param int $connectionId The feed connection ID
+     * @param int $limit Maximum number of products to return
+     * @return array Array of products belonging to the connection
+     */
+    public function findProductsByConnection(int $connectionId, int $limit = 100): array
+    {
+        try {
+            $products = $this->makeRequest('products', [
+                'per_page' => min($limit, 100),
+                'meta_key' => '_elementa_feed_connection_id',
+                'meta_value' => $connectionId,
+            ]);
+
+            return $products ?? [];
+
+        } catch (\Throwable $e) {
+            Log::error("Error finding products by connection #{$connectionId}", [
+                'connection_id' => $connectionId,
+                'error' => $e->getMessage()
+            ]);
+            return [];
+        }
+    }
+
+    /**
+     * Get statistics about products managed by ElementaFeeds
+     *
+     * @return array Statistics about managed products
+     */
+    public function getElementaProductStats(): array
+    {
+        try {
+            // Get total count of products with ElementaFeeds metadata
+            $response = $this->makeRequest('products', [
+                'per_page' => 1,
+                'meta_key' => '_elementa_feed_connection_id',
+            ], 'GET', true); // Return full response to get headers
+
+            $totalProducts = (int) ($response['headers']['X-WP-Total'][0] ?? 0);
+
+            // Get sample of recent products to analyze
+            $recentProducts = $this->makeRequest('products', [
+                'per_page' => 50,
+                'orderby' => 'modified',
+                'order' => 'desc',
+                'meta_key' => '_elementa_feed_connection_id',
+            ]);
+
+            $connectionCounts = [];
+            $oldestLastSeen = null;
+            $newestLastSeen = null;
+
+            foreach ($recentProducts as $product) {
+                // Count by connection
+                $connectionId = null;
+                $lastSeen = null;
+
+                foreach ($product['meta_data'] ?? [] as $meta) {
+                    if ($meta['key'] === '_elementa_feed_connection_id') {
+                        $connectionId = (int) $meta['value'];
+                    } elseif ($meta['key'] === '_elementa_last_seen_timestamp') {
+                        $lastSeen = (int) $meta['value'];
+                    }
+                }
+
+                if ($connectionId) {
+                    $connectionCounts[$connectionId] = ($connectionCounts[$connectionId] ?? 0) + 1;
+                }
+
+                if ($lastSeen) {
+                    if ($oldestLastSeen === null || $lastSeen < $oldestLastSeen) {
+                        $oldestLastSeen = $lastSeen;
+                    }
+                    if ($newestLastSeen === null || $lastSeen > $newestLastSeen) {
+                        $newestLastSeen = $lastSeen;
+                    }
+                }
+            }
+
+            return [
+                'total_managed_products' => $totalProducts,
+                'products_by_connection' => $connectionCounts,
+                'oldest_last_seen' => $oldestLastSeen ? date('Y-m-d H:i:s', $oldestLastSeen) : null,
+                'newest_last_seen' => $newestLastSeen ? date('Y-m-d H:i:s', $newestLastSeen) : null,
+                'sample_size' => count($recentProducts)
+            ];
+
+        } catch (\Throwable $e) {
+            Log::error("Error getting ElementaFeeds product statistics", [
+                'error' => $e->getMessage()
+            ]);
+            return ['error' => $e->getMessage()];
+        }
     }
 }

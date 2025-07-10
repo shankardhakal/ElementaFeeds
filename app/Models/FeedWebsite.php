@@ -48,10 +48,7 @@ class FeedWebsite extends Pivot
         return $this->belongsTo(Website::class);
     }
 
-    public function syndicatedProducts()
-    {
-        return $this->hasMany(SyndicatedProduct::class, 'feed_website_id', 'id');
-    }
+
 
     public function importRuns()
     {

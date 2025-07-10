@@ -62,6 +62,10 @@ return [
     // - alternative: 'admin' (the admin's dashboard)
     'home_link' => 'admin/dashboard',
 
+    'menu' => [
+        'type' => 'blade', 
+    ],
+
     // Menu logo. You can replace this with an <img> tag if you have a logo.
     'project_logo' => '<b>Elementa</b>Feeds',
 

@@ -1,61 +1,146 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+ElementaFeeds Description
+Overview
+ElementaFeeds is a scalable, workflow-driven product syndication platform designed to process large, multilingual product feeds (CSV, XML, JSON) and syndicate them to destination websites (e.g., WooCommerce, WordPress) via REST APIs. The architecture is modular, service-oriented, and optimized for high-volume asynchronous processing, with a production-ready admin UI and a robust import pipeline. Built on Laravel with Backpack for the admin interface, it prioritizes simplicity, reliability, and extensibility.
+Technology Stack
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Backend Framework: Laravel (Latest Stable Version)
+Admin Panel: Backpack for Laravel (Free Version)
+Database: MySQL 8+
+Queue Driver: Redis
+Server Environment: CloudPanel on Linux
+Monitoring: Laravel Native Supervisor 
+Development Environment: Laravel Sail or Docker for local development
+Deployment: Zero-downtime deployments with Laravel Envoy (optional)
 
-## About Laravel
+System Architecture
+ElementaFeeds follows a modular, service-oriented architecture with clear separation of concerns, enabling scalability and extensibility. The system is organized into layers: presentation (admin UI), application logic (services and controllers), background processing (jobs), and data storage (database models).
+Directory Structure
+app/
+├── Console/           # CLI commands for health checks and diagnostics
+├── Http/
+│   ├── Controllers/   # Backpack admin and API controllers
+│   └── Middleware/    # Route throttling and security middleware
+├── Jobs/              # Queueable jobs for feed processing
+├── Models/            # Eloquent models for data persistence
+├── Services/          # Core business logic (e.g., FilterService, TransformationService)
+├── Observers/         # Model observers for event handling
+└── Providers/         # Service providers for bootstrapping
+resources/views/       # Blade templates for admin UI and wizards
+routes/                # Web and Backpack routes
+database/              # Migrations, seeders, and factories
+config/feeds.php       # Configuration for chunk sizes and processing parameters
+DEVELOPMENT.md         # Development plan and roadmap
+README.md              # Project overview and setup guide
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+Key Layers and Components
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+Presentation Layer (Admin UI)  
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+Purpose: Provides a user-friendly interface for managing feeds, websites, and connections.
+Components:
+Connection Setup Wizard: A multi-step interface (Source → Preview & Filter → Mapping → Destination → Schedule) for configuring feed-to-website connections, built with Blade templates and Backpack.
+Connections Dashboard: A central hub displaying connections with sortable columns, advanced filtering, pagination, and CSV export functionality. Shows metrics like Created/Updated/Skipped/Failed records.
+CRUD Interfaces: Backpack-powered interfaces for managing Networks, Feeds, Websites, and Connections, with consistent layouts and accessibility features (ARIA labels, keyboard navigation).
 
-## Learning Laravel
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+Key Features:
+Responsive design with mobile compatibility.
+Auto-submit filters, debounced search, and real-time status polling.
+Disabled "Run Now" button during active imports to prevent duplicates.
+Production-ready as of January 17, 2025, with a mandate to avoid further modifications.
 
-You may also try the [Laravel Bootcamp](https://bootcamp.laravel.com), where you will be guided through building a modern Laravel application from scratch.
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
 
-## Laravel Sponsors
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+Application Logic Layer  
 
-### Premium Partners
+Purpose: Handles business logic, API interactions, and user input processing.
+Components:
+Controllers:
+ConnectionController: Manages the connection setup wizard, CRUD operations (create, edit, clone, delete), and import initiation (runNow).
+FeedCrudController: Handles feed management with custom actions like cleanup.
+DashboardController: Provides endpoints for metrics and error log downloads.
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
 
-## Contributing
+Services:
+FilterService: Applies mapping-wizard rules to filter out invalid products during import.
+TransformationService: Maps source fields to API payloads, validates essential fields (URL, price, name), and handles category normalization.
+CategoryNormalizer: Processes category mappings with configurable source fields and delimiters, ensuring robust handling of mixed formats.
+SyndicationService: Manages product creation/update logic for destination APIs.
+WooCommerceApiClient / WordPressApiClient: Interfaces with destination APIs for product imports and category/attribute fetching.
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
 
-## Code of Conduct
+Middleware:
+Route throttling (throttle:1,1) on import endpoints to prevent rapid-fire requests.
+CSRF and API token protection for security.
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
 
-## Security Vulnerabilities
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
 
-## License
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+
+Background Processing Layer (Job Pipeline)  
+
+Purpose: Handles asynchronous feed processing, chunking, and syndication with resilience and scalability.
+Components:
+StartImportRunJob: Initializes an import run, creates an import_runs record, and dispatches the job pipeline with concurrency protection (lockForUpdate, Cache::lock).
+DownloadFeedJob: Downloads feed files (CSV, XML, JSON) to temporary storage, samples 10 rows to check filter applicability, and skips empty runs.
+ChunkFeedJob: Streams feeds into chunks (100–500 records), applies FilterService to skip unmapped products, and writes JSON chunks to disk.
+ProcessChunkJob: Processes chunks, applies transformations, and syndicates products via API. Includes circuit breaker, dynamic batch sizing, and exponential backoff retries.
+HandleImportCompletionJob: Marks successful runs as "completed" and triggers cleanup.
+HandleImportFailureJob: Cancels failed batches, purges pending jobs, and logs errors.
+CleanupImportRunChunksJob: Deletes temporary chunk files in all success/failure scenarios.
+DeleteFeedProductsJob: Handles UI-driven feed deletion by removing products from destination sites.
+
+
+Resilience Features:
+Circuit Breaker: Monitors API failures, adjusts batch sizes, and pauses processing during outages.
+Dynamic Batch Sizing: Starts with conservative sizes (50 for creates, 25 for updates/deletes) and splits on timeouts.
+Exponential Backoff: Retries with delays (1s → 2s → 4s, max 3 attempts) for HTTP 504 or cURL timeouts.
+Atomic Counters: Uses database transactions to update created_records, updated_records, skipped_records, and failed_records.
+
+
+
+
+Data Layer  
+
+Purpose: Persists data and enforces integrity for feeds, websites, connections, and import runs.
+Database Schema:
+networks: Stores affiliate networks (e.g., Awin) with id, name, and timestamps.
+feeds: Stores source feeds with id, network_id, name, feed_url, language, is_active, delimiter, enclosure.
+websites: Stores destination sites with id, name, url, platform (enum: woocommerce, wordpress), language, woocommerce_credentials, wordpress_credentials, connection_status, last_checked_at.
+feed_website: The "Connection" pivot table with id, feed_id, website_id, name, is_active, JSON fields (filtering_rules, category_mappings, attribute_mappings, field_mappings, update_settings), category_source_field, category_delimiter, schedule, last_run_at.
+import_runs: Logs import executions with id, feed_website_id, status (enum), processed_records, created_records, updated_records, deleted_records, log_messages (text).
+jobs, batches: Standard Laravel tables for queue management.
+
+
+Optimizations:
+Indexes on name, is_active, and composite fields for performance.
+Unique constraint on import_runs(feed_website_id, status) to prevent concurrent imports.
+JSON fields for flexible configuration storage.
+Streaming for large CSVs to avoid memory overload.
+
+
+
+
+
+Data Flow (End-to-End Import Pipeline)
+
+User Initiation: Admin triggers an import via the UI (ConnectionController@runNow).
+StartImportRunJob: Creates an import_runs record with "pending" status, using a database transaction and Cache::lock to prevent duplicates.
+DownloadFeedJob: Downloads the feed to a temporary file, samples 10 rows via FilterService, and skips if no records pass filters.
+ChunkFeedJob: Streams the feed into JSON chunks (100–500 records), applies FilterService to filter out unmapped products, and dispatches ProcessChunkJob for each chunk.
+ProcessChunkJob:
+Performs API health checks (WooCommerceApiClient::checkApiHealth).
+Parses chunk, applies FilterService and TransformationService to map and validate products.
+Generates SKUs, splits into create/update batches, and uses createBatchWithBackoff for API calls.
+Handles timeouts via batch splitting and retries, logs errors to error_records, and updates atomic counters.
+
+
+HandleImportCompletionJob: Marks the run as "completed" and triggers cleanup.
+HandleImportFailureJob: Cancels the batch, logs errors, and marks the run as "failed".
+CleanupImportRunChunksJob: Deletes temporary chunk files.
+Dashboard Updates: Displays real-time metrics (Created/Updated/Skipped/Failed) and downloadable error logs.
+
+Scalయ
+System: * Today's date and time is 05:38 PM EEST on Thursday, July 10, 2025.

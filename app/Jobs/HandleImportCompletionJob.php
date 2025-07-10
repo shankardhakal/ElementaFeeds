@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\ImportRun;
+use App\Jobs\ReconcileProductStatusJob;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -10,6 +11,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 /**
  * HandleImportCompletionJob
@@ -48,30 +50,65 @@ class HandleImportCompletionJob implements ShouldQueue
         $importRun = ImportRun::find($this->importRunId);
 
         if ($importRun && $importRun->status !== 'failed') {
-            Log::info("Batch for ImportRun #{$this->importRunId} completed successfully. Finalizing run.");
+            // Determine final status based on recorded failures
+            $hasErrors = ($importRun->failed_records ?? 0) > 0;
+            $finalStatus = $hasErrors ? 'completed_with_errors' : 'completed';
+            Log::info("Batch for ImportRun #{$this->importRunId} completed (errors: {$importRun->failed_records}). Finalizing run as '{$finalStatus}'.");
             
             // Safely update status with constraint handling
             try {
-                $importRun->status = 'completed';
-                $importRun->finished_at = now();
-                $importRun->save();
+                // Use a database transaction to ensure atomicity
+                DB::transaction(function() use ($importRun, $finalStatus) {
+                    // First, expire any old completed runs for this connection
+                    $expiredCount = \App\Models\ImportRun::where('feed_website_id', $importRun->feed_website_id)
+                        ->where('status', 'completed')
+                        ->where('id', '!=', $importRun->id)
+                        ->where('updated_at', '<', now()->subMinutes(30))
+                        ->update([
+                            'status' => 'expired',
+                            'finished_at' => now(),
+                            'log_messages' => 'Import run status changed to avoid constraint violation.'
+                        ]);
+                    
+                    if ($expiredCount > 0) {
+                        Log::info("Expired {$expiredCount} old import runs to prevent constraint violation");
+                    }
+                    
+                    // Now update the current run to final status
+                    $importRun->status = $finalStatus;
+                    $importRun->finished_at = now();
+                    $importRun->save();
+                });
             } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
-                // Clean up any conflicting stuck runs for this connection
-                \App\Models\ImportRun::where('feed_website_id', $importRun->feed_website_id)
-                    ->where('status', 'completed')
-                    ->where('id', '!=', $importRun->id)
-                    ->where('updated_at', '<', now()->subMinutes(30))
-                    ->update([
-                        'status' => 'expired',
-                        'finished_at' => now(),
-                        'log_messages' => 'Import run status changed to avoid constraint violation.'
-                    ]);
+                Log::warning("Constraint violation when completing import run #{$importRun->id}. Attempting recovery...");
                 
-                // Retry the status update
-                $importRun->refresh();
-                $importRun->status = 'completed';
-                $importRun->finished_at = now();
-                $importRun->save();
+                // Try to resolve the conflict by expiring conflicting runs
+                try {
+                    DB::transaction(function() use ($importRun, $finalStatus) {
+                        // Force expire ALL other completed runs for this connection
+                        \App\Models\ImportRun::where('feed_website_id', $importRun->feed_website_id)
+                            ->where('status', 'completed')
+                            ->where('id', '!=', $importRun->id)
+                            ->update([
+                                'status' => 'expired',
+                                'finished_at' => now(),
+                                'log_messages' => 'Import run status changed due to constraint violation recovery.'
+                            ]);
+                        
+                        // Try again to mark this run as final status
+                        $importRun->status = $finalStatus;
+                        $importRun->finished_at = now();
+                        $importRun->save();
+                    });
+                    Log::info("Successfully recovered from constraint violation for import run #{$importRun->id}");
+                } catch (\Exception $retryException) {
+                    Log::error("Failed to recover from constraint violation: " . $retryException->getMessage());
+                    // Mark as failed instead of completed to avoid infinite loops
+                    // Use the same $finalStatus logic for consistency
+                    $importRun->status = 'failed';
+                    $importRun->finished_at = now();
+                    $importRun->save();
+                }
             }
             
             // Schedule the ReconcileProductStatusJob to run after import completion
