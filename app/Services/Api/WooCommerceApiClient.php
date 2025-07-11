@@ -1854,4 +1854,96 @@ class WooCommerceApiClient implements ApiClientInterface
         Log::info("Found total " . count($productIds) . " products for connection ID {$connectionId}");
         return $productIds;
     }
+
+    /**
+     * Find stale products by connection ID and cutoff timestamp.
+     * Products are considered stale if their elementa_last_seen_timestamp is older than the cutoff.
+     *
+     * @param int $connectionId The feed_website connection ID
+     * @param int $cutoffTimestamp Products with timestamps older than this are considered stale
+     * @return array List of stale products with structure: [id, sku, name, last_seen]
+     */
+    public function findStaleProducts(int $connectionId, int $cutoffTimestamp): array
+    {
+        $staleProducts = [];
+        $page = 1;
+        $perPage = 100;
+        
+        do {
+            $params = [
+                'meta_key' => 'elementa_feed_connection_id',
+                'meta_value' => (string)$connectionId,
+                'per_page' => $perPage,
+                'page' => $page,
+                'status' => 'any' // Include all product statuses
+            ];
+
+            try {
+                Log::debug("Searching for stale products with connection ID {$connectionId}, page {$page}");
+                $response = $this->makeRequest('products', $params);
+                
+                if (!is_array($response) || empty($response)) {
+                    break; // No more products
+                }
+                
+                // Filter products by timestamp
+                foreach ($response as $product) {
+                    $lastSeen = $this->getProductLastSeen($product);
+                    
+                    // Product is stale if:
+                    // 1. It has no timestamp (legacy products)
+                    // 2. Its timestamp is older than cutoff
+                    if ($lastSeen === null || $lastSeen < $cutoffTimestamp) {
+                        $staleProducts[] = [
+                            'id' => $product['id'],
+                            'sku' => $product['sku'] ?? 'N/A',
+                            'name' => $product['name'] ?? 'N/A',
+                            'last_seen' => $lastSeen
+                        ];
+                    }
+                }
+                
+                Log::debug("Found " . count($response) . " products on page {$page} for connection {$connectionId}");
+                
+                // If we got less than perPage results, we've reached the end
+                if (count($response) < $perPage) {
+                    break;
+                }
+                
+                $page++;
+                
+                // Add small delay between pages to prevent overwhelming the server
+                usleep(100000); // 100ms delay
+                
+            } catch (\Exception $e) {
+                Log::error("Failed to find stale products for connection ID {$connectionId} on page {$page}: " . $e->getMessage());
+                break;
+            }
+            
+        } while ($page <= 50); // Safety limit
+        
+        Log::info("Found total " . count($staleProducts) . " stale products for connection ID {$connectionId}");
+        return $staleProducts;
+    }
+
+    /**
+     * Extract the last seen timestamp from a product's meta_data.
+     *
+     * @param array $product The product data from WooCommerce API
+     * @return int|null The timestamp if found, null otherwise
+     */
+    protected function getProductLastSeen(array $product): ?int
+    {
+        if (!isset($product['meta_data']) || !is_array($product['meta_data'])) {
+            return null;
+        }
+
+        foreach ($product['meta_data'] as $meta) {
+            if (isset($meta['key']) && $meta['key'] === 'elementa_last_seen_timestamp') {
+                return is_numeric($meta['value']) ? (int)$meta['value'] : null;
+            }
+        }
+
+        return null;
+    }
 }

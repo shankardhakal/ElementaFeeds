@@ -340,7 +340,7 @@ class ConnectionController extends Controller
             'update_settings.update_existing' => 'nullable|boolean',
             'update_settings.update_logic' => 'required|string|in:all,partial',
             'update_settings.partial_update_fields' => 'nullable|string',
-            'update_settings.stale_action' => 'required|string|in:set_stock_zero,delete',
+            'update_settings.stale_action' => 'required|string|in:delete',
             'update_settings.stale_days' => 'required|integer|min:1',
         ]);
 

@@ -63,7 +63,7 @@ class ReconcileStaleProducts extends Command
             $days = (int)($settings['stale_days'] ?? 0);
             
             // Only include connections with valid stale product settings
-            return in_array($action, ['delete', 'set_stock_zero']) && $days > 0;
+            return $action === 'delete' && $days > 0;
         });
 
         if ($connections->isEmpty()) {

@@ -39,7 +39,7 @@ class ProcessStaleProductCleanup implements ShouldQueue
      *
      * @param int $connectionId The feed connection ID
      * @param int $cutoffTimestamp Products with last_seen older than this are considered stale
-     * @param string $action The action to take (set_stock_zero, delete)
+     * @param string $action The action to take (delete)
      */
     public function __construct(int $connectionId, int $cutoffTimestamp, string $action)
     {
@@ -149,9 +149,6 @@ class ProcessStaleProductCleanup implements ShouldQueue
 
         try {
             switch ($this->action) {
-                case 'set_stock_zero':
-                    $result = $this->markOutOfStock($products, $apiClient);
-                    break;
                 case 'delete':
                     $result = $this->deleteProducts($products, $apiClient);
                     break;
@@ -188,28 +185,6 @@ class ProcessStaleProductCleanup implements ShouldQueue
         $result = $apiClient->batchProducts($deleteData);
         
         return $this->processBatchResult($result, 'delete');
-    }
-
-    /**
-     * Mark stale products as out of stock
-     */
-    protected function markOutOfStock(array $products, WooCommerceApiClient $apiClient): array
-    {
-        $updateData = [
-            'update' => collect($products)->map(function ($product) {
-                $productId = is_array($product) ? $product['id'] : $product;
-                return [
-                    'id' => $productId,
-                    'stock_status' => 'outofstock',
-                    'manage_stock' => true,
-                    'stock_quantity' => 0
-                ];
-            })->all()
-        ];
-
-        $result = $apiClient->batchProducts($updateData);
-        
-        return $this->processBatchResult($result, 'out_of_stock');
     }
 
     /**

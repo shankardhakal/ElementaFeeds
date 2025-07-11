@@ -46,8 +46,8 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'sku' => 'SKU001',
                     'name' => 'Product 1',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '44'],
-                        ['key' => '_elementa_last_seen_timestamp', 'value' => $cutoffTimestamp - 3600] // 1 hour before cutoff
+                        ['key' => 'elementa_feed_connection_id', 'value' => '44'],
+                        ['key' => 'elementa_last_seen_timestamp', 'value' => $cutoffTimestamp - 3600] // 1 hour before cutoff
                     ]
                 ],
                 [
@@ -55,8 +55,8 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'sku' => 'SKU002',
                     'name' => 'Product 2',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '44'],
-                        ['key' => '_elementa_last_seen_timestamp', 'value' => $cutoffTimestamp + 3600] // 1 hour after cutoff (not stale)
+                        ['key' => 'elementa_feed_connection_id', 'value' => '44'],
+                        ['key' => 'elementa_last_seen_timestamp', 'value' => $cutoffTimestamp + 3600] // 1 hour after cutoff (not stale)
                     ]
                 ],
                 [
@@ -64,8 +64,8 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'sku' => 'SKU003',
                     'name' => 'Product 3',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '44'],
-                        ['key' => '_elementa_last_seen_timestamp', 'value' => $cutoffTimestamp - 7200] // 2 hours before cutoff
+                        ['key' => 'elementa_feed_connection_id', 'value' => '44'],
+                        ['key' => 'elementa_last_seen_timestamp', 'value' => $cutoffTimestamp - 7200] // 2 hours before cutoff
                     ]
                 ]
             ])
@@ -102,8 +102,8 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'sku' => 'SKU001',
                     'name' => 'Product 1',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '44']
-                        // Missing _elementa_last_seen_timestamp
+                        ['key' => 'elementa_feed_connection_id', 'value' => '44']
+                        // Missing elementa_last_seen_timestamp
                     ]
                 ]
             ])
@@ -146,7 +146,7 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'sku' => 'SKU001',
                     'name' => 'Product 1',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '44']
+                        ['key' => 'elementa_feed_connection_id', 'value' => '44']
                     ]
                 ],
                 [
@@ -154,7 +154,7 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'sku' => 'SKU002',
                     'name' => 'Product 2',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '44']
+                        ['key' => 'elementa_feed_connection_id', 'value' => '44']
                     ]
                 ]
             ])
@@ -179,8 +179,8 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'name' => 'Product 1',
                     'modified' => '2025-07-10T10:00:00',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '44'],
-                        ['key' => '_elementa_last_seen_timestamp', 'value' => now()->timestamp]
+                        ['key' => 'elementa_feed_connection_id', 'value' => '44'],
+                        ['key' => 'elementa_last_seen_timestamp', 'value' => now()->timestamp]
                     ]
                 ],
                 [
@@ -189,8 +189,8 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'name' => 'Product 2',
                     'modified' => '2025-07-10T09:00:00',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '45'],
-                        ['key' => '_elementa_last_seen_timestamp', 'value' => now()->subHour()->timestamp]
+                        ['key' => 'elementa_feed_connection_id', 'value' => '45'],
+                        ['key' => 'elementa_last_seen_timestamp', 'value' => now()->subHour()->timestamp]
                     ]
                 ]
             ], 200, [
@@ -242,8 +242,8 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'sku' => 'SKU001',
                     'name' => 'Fresh Product',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '44'],
-                        ['key' => '_elementa_last_seen_timestamp', 'value' => now()->timestamp] // Fresh
+                        ['key' => 'elementa_feed_connection_id', 'value' => '44'],
+                        ['key' => 'elementa_last_seen_timestamp', 'value' => now()->timestamp] // Fresh
                     ]
                 ],
                 [
@@ -251,8 +251,8 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'sku' => 'SKU002',
                     'name' => 'Stale Product',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '44'],
-                        ['key' => '_elementa_last_seen_timestamp', 'value' => $cutoffTimestamp - 1] // Stale by 1 second
+                        ['key' => 'elementa_feed_connection_id', 'value' => '44'],
+                        ['key' => 'elementa_last_seen_timestamp', 'value' => $cutoffTimestamp - 1] // Stale by 1 second
                     ]
                 ],
                 [
@@ -260,8 +260,8 @@ class WooCommerceApiClientStatelessMethodsTest extends TestCase
                     'sku' => 'SKU003',
                     'name' => 'Borderline Product',
                     'meta_data' => [
-                        ['key' => '_elementa_feed_connection_id', 'value' => '44'],
-                        ['key' => '_elementa_last_seen_timestamp', 'value' => $cutoffTimestamp] // Exactly at cutoff
+                        ['key' => 'elementa_feed_connection_id', 'value' => '44'],
+                        ['key' => 'elementa_last_seen_timestamp', 'value' => $cutoffTimestamp] // Exactly at cutoff
                     ]
                 ]
             ])

@@ -12,8 +12,26 @@ return new class extends Migration
      */
     public function up(): void
     {
-        // First, drop the existing overly restrictive constraint using raw SQL
-        DB::statement('ALTER TABLE import_runs DROP INDEX import_runs_conn_status_unique');
+        // Check if we're using SQLite or MySQL and handle appropriately
+        $driver = Schema::getConnection()->getDriverName();
+        
+        if ($driver === 'sqlite') {
+            // For SQLite, we need to recreate the table without the constraint
+            // First, check if the constraint exists
+            $hasConstraint = DB::select("SELECT name FROM sqlite_master WHERE type='index' AND name='import_runs_conn_status_unique'");
+            
+            if (!empty($hasConstraint)) {
+                // Drop the index in SQLite
+                DB::statement('DROP INDEX import_runs_conn_status_unique');
+            }
+        } else {
+            // For MySQL, drop the constraint
+            try {
+                DB::statement('ALTER TABLE import_runs DROP INDEX import_runs_conn_status_unique');
+            } catch (\Exception $e) {
+                // Index might not exist, that's fine
+            }
+        }
         
         // Since MySQL doesn't support partial unique indexes with WHERE clauses,
         // we'll create a regular unique index on (feed_website_id, status) but
@@ -29,6 +47,14 @@ return new class extends Migration
     public function down(): void
     {
         // Restore the old constraint
-        DB::statement('ALTER TABLE import_runs ADD CONSTRAINT import_runs_conn_status_unique UNIQUE (feed_website_id, status)');
+        $driver = Schema::getConnection()->getDriverName();
+        
+        if ($driver === 'sqlite') {
+            // For SQLite, create the index
+            DB::statement('CREATE UNIQUE INDEX import_runs_conn_status_unique ON import_runs (feed_website_id, status)');
+        } else {
+            // For MySQL, add the constraint
+            DB::statement('ALTER TABLE import_runs ADD CONSTRAINT import_runs_conn_status_unique UNIQUE (feed_website_id, status)');
+        }
     }
 };

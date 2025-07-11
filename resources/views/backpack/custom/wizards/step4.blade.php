@@ -77,7 +77,6 @@
                         <div class="form-group col-md-6">
                             <label for="stale_action">Action</label>
                             <select name="update_settings[stale_action]" id="stale_action" class="form-control">
-                                <option value="set_stock_zero" {{ isset($wizardData['update_settings']['stale_action']) && $wizardData['update_settings']['stale_action'] == 'set_stock_zero' ? 'selected' : '' }}>Set stock to 0</option>
                                 <option value="delete" {{ isset($wizardData['update_settings']['stale_action']) && $wizardData['update_settings']['stale_action'] == 'delete' ? 'selected' : '' }}>Delete Product</option>
                             </select>
                         </div>
