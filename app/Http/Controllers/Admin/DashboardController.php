@@ -65,8 +65,6 @@ class DashboardController extends Controller
                                         ->take(10)
                                         ->get();
 
-        $data['feeds'] = Feed::all();
-
         // Mapping wizard enhancement: include the unique identifier field for mapping
         $data['destination_fields']['unique_identifier'] = 'Unique Identifier (Feed Name + Source ID)';
 

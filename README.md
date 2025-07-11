@@ -141,6 +141,3 @@ HandleImportCompletionJob: Marks the run as "completed" and triggers cleanup.
 HandleImportFailureJob: Cancels the batch, logs errors, and marks the run as "failed".
 CleanupImportRunChunksJob: Deletes temporary chunk files.
 Dashboard Updates: Displays real-time metrics (Created/Updated/Skipped/Failed) and downloadable error logs.
-
-Scalయ
-System: * Today's date and time is 05:38 PM EEST on Thursday, July 10, 2025.

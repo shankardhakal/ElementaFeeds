@@ -20,7 +20,6 @@ Route::group([
     // --- Standard CRUDs ---
     Route::crud('network', 'NetworkCrudController');
     Route::crud('feed', 'FeedCrudController');
-    // Note: feed.delete_products route removed - functionality available in main dashboard
     Route::crud('website', 'WebsiteCrudController');
     Route::post('website/test-connection', 'WebsiteCrudController@testConnection')->name('website.test_connection');
 
@@ -36,6 +35,12 @@ Route::group([
     Route::get('connection/create-step-4', 'ConnectionController@createStep4')->name('connection.create.step4');
     Route::post('connection/create-step-4', 'ConnectionController@storeStep4')->name('connection.store.step4');
     Route::post('connection/parse-categories', 'ConnectionController@parseCategories')->name('connection.parse_categories');
+    
+    // --- Feed Deletion Routes ---
+    Route::get('feed-deletion', 'FeedDeletionCrudController@index')->name('backpack.feed-deletion.index');
+    Route::post('feed-deletion/{connectionId}/cleanup', 'FeedDeletionCrudController@cleanup')->name('backpack.feed-deletion.cleanup');
+    Route::post('feed-deletion/{cleanupRunId}/cancel', 'FeedDeletionCrudController@cancel')->name('backpack.feed-deletion.cancel');
+    Route::get('feed-deletion/{cleanupRunId}/details', 'FeedDeletionCrudController@show')->name('backpack.feed-deletion.show');
     
     // --- Settings Routes ---
     Route::get('setting', 'SettingController@index')->name('setting.index');

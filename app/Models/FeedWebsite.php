@@ -65,4 +65,21 @@ class FeedWebsite extends Pivot
                     ->select('import_runs.id', 'import_runs.feed_website_id', 'import_runs.status', 'import_runs.created_at')
                     ->orderByDesc('import_runs.created_at');
     }
+
+    /**
+     * Get cleanup runs for this connection
+     */
+    public function cleanupRuns()
+    {
+        return $this->hasMany(ConnectionCleanupRun::class, 'connection_id', 'id');
+    }
+
+    /**
+     * Get the latest cleanup run for this connection
+     */
+    public function latestCleanupRun()
+    {
+        return $this->hasOne(ConnectionCleanupRun::class, 'connection_id', 'id')
+                    ->orderByDesc('created_at');
+    }
 }

@@ -132,52 +132,5 @@
     </div>
   </div>
 
-  {{-- Feed Management Actions --}}
-  <div class="row">
-    <div class="col-md-12">
-      <div class="card">
-        <div class="card-header">Feed Management</div>
-        <div class="card-body">
-          <form method="POST" action="{{ route('feeds.cleanup') }}">
-            @csrf
-            <div class="form-group">
-              <label for="feed_id">Select Feed:</label>
-              <select name="feed_id" id="feed_id" class="form-control">
-                @foreach ($feeds as $feed)
-                  <option value="{{ $feed->id }}">{{ $feed->name }}</option>
-                @endforeach
-              </select>
-            </div>
-            <button type="submit" class="btn btn-danger mt-3">Delete Feed Data</button>
-          </form>
 
-          @if(session('results'))
-            <div class="card mt-3">
-              <div class="card-header">Cleanup Results</div>
-              <div class="card-body">
-                <table class="table table-striped">
-                  <thead>
-                    <tr>
-                      <th>Website</th>
-                      <th>Status</th>
-                      <th>Message</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    @foreach(session('results') as $result)
-                      <tr>
-                        <td>{{ $result['website'] }}</td>
-                        <td>{{ $result['status'] }}</td>
-                        <td>{{ $result['message'] }}</td>
-                      </tr>
-                    @endforeach
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          @endif
-        </div>
-      </div>
-    </div>
-  </div>
 @endsection

@@ -907,19 +907,23 @@ class WooCommerceApiClient implements ApiClientInterface
      */
     private function applyRateLimit(string $operation): void
     {
-        $rateLimiterKey = "woocommerce-api:{$this->websiteId}:{$operation}";
-        
-        // Check if we're hitting the rate limit (5 requests per minute per operation)
-        if (\Illuminate\Support\Facades\RateLimiter::tooManyAttempts($rateLimiterKey, 5)) {
-            $seconds = \Illuminate\Support\Facades\RateLimiter::availableIn($rateLimiterKey);
+        // The key is a combination of website ID and the operation type.
+        $rateLimiterKey = "{$this->websiteId}:{$operation}";
+        $limiterName = 'woocommerce-api';
+
+        // The RateLimiter is configured in AppServiceProvider.
+        // We check if we have exceeded the limit for our key.
+        if (\Illuminate\Support\Facades\RateLimiter::tooManyAttempts($limiterName, $rateLimiterKey)) {
+            $seconds = \Illuminate\Support\Facades\RateLimiter::availableIn($limiterName, $rateLimiterKey);
             Log::warning("Rate limit reached for website #{$this->websiteId} ({$operation} operation). Must wait {$seconds} seconds before trying again.");
             
-            // Sleep for the required time, but cap at 30 seconds to prevent too long delays
-            sleep(min($seconds + 1, 30));
+            // Sleep for the required time, plus one second to be safe.
+            // Capped at 60 seconds to avoid excessively long waits.
+            sleep(min($seconds + 1, 60));
         }
         
-        // Mark that we\'re using the rate limiter
-        \Illuminate\Support\Facades\RateLimiter::hit($rateLimiterKey, 60); // Keeps track for 60 seconds
+        // Record a "hit" for this key to count against the rate limit.
+        \Illuminate\Support\Facades\RateLimiter::hit($limiterName, $rateLimiterKey);
     }
     
     /**

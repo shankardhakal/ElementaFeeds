@@ -17,6 +17,7 @@ use Illuminate\Support\Arr;
 use Illuminate\Validation\Rule;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\RateLimiter;
 use Alert; 
 
 class ConnectionController extends Controller
@@ -393,17 +394,31 @@ class ConnectionController extends Controller
     public function runNow(int $id)
     {
         $connection = FeedWebsite::findOrFail($id);
-        try {
-            Cache::lock("import:{$id}", 300)->block(0, function() use ($connection) {
-                StartImportRunJob::dispatch($connection);
-                // Backpack native success notification
-                \Alert::success("Import for '{$connection->name}' queued successfully.")->flash();
-            });
-        } catch (LockTimeoutException $e) {
-            // Backpack native warning notification
-            \Alert::warning("Import already running for '{$connection->name}'. Try again later.")->flash();
+        $website = $connection->website;
+
+        // The job's WithoutOverlapping middleware uses a lock based on the website ID.
+        // We manually check for this lock *before* dispatching the job.
+        $lockKey = 'start-import-run:' . $website->id;
+        $lock = Cache::lock($lockKey, 10);
+
+        // Try to acquire the lock. If we can't, it means an import is already running for this website.
+        if (!$lock->get()) {
+            // Could not acquire the lock, so an import is already in progress for this website.
+            $message = "<strong>Import in Progress:</strong> An import for website '{$website->name}' is already running. Please wait for it to complete before starting a new one.";
+            \Alert::warning($message)->flash();
+            return redirect()->route('connection.index');
         }
-        // Always redirect to connections list to avoid landing on unsupported routes
+
+        // If we get here, we acquired the lock, meaning no other import for this website is running.
+        // We can now safely dispatch the job. The job's middleware will use the same lock.
+        try {
+            StartImportRunJob::dispatch($connection);
+            \Alert::success("Import for '{$connection->name}' queued successfully.")->flash();
+        } finally {
+            // It's crucial to release the lock so the job can acquire it when it runs.
+            $lock->release();
+        }
+        
         return redirect()->route('connection.index');
     }
 

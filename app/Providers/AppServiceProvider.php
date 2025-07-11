@@ -61,23 +61,18 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(10)->by($job->uniqueId());
         });
         
-        // Add another rate limiter specifically for API batch operations
-        // This will be used by WooCommerceApiClient to limit API calls
-        RateLimiter::for('woocommerce-api', function (string $websiteId) {
-            // Extract actual website ID if it's a prefixed string
-            $actualId = $websiteId;
-            if (strpos($websiteId, 'woocommerce-api:') === 0) {
-                $actualId = substr($websiteId, 16);
-            }
-            
-            // Check for dynamic rate limit set by MonitorServerLoad command
-            $limit = Cache::get("rate_limit:api:{$actualId}:limit", 30);   // Default to 30 API calls
-            $minutes = Cache::get("rate_limit:api:{$actualId}:minutes", 1); // per minute
-            
-            Log::debug("Applying API rate limit for website {$actualId}: {$limit} per {$minutes} minutes");
-            
-            // Allow only N batch operations every X minutes for a given website (dynamic)
-            return Limit::perMinutes($minutes, $limit)->by($websiteId);
+        // This rate limiter is used by the WooCommerceApiClient to avoid hitting API request limits.
+        RateLimiter::for('woocommerce-api', function (string $key) {
+            // The key is expected to be in the format "websiteId:operation"
+            // We only use the websiteId for rate limiting to create a per-site request pool.
+            list($websiteId) = explode(':', $key, 2);
+
+            // A generous but safe default: 120 API calls per minute per website.
+            // This can be overridden by environment variables if a specific site needs more or less.
+            $limit = config('feeds.woocommerce_api_limit', 120);
+            $decayMinutes = config('feeds.woocommerce_api_decay_minutes', 1);
+
+            return Limit::perMinutes($decayMinutes, $limit)->by($websiteId);
         });
 
         Blade::anonymousComponentPath(resource_path('views/backpack/custom/components'));
