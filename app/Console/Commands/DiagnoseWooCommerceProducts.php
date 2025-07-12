@@ -150,15 +150,20 @@ class DiagnoseWooCommerceProducts extends Command
                 $this->info("   Product Name: {$testResult['product']['name']}");
                 $this->info("   Product Status: {$testResult['product']['status']}");
                 
-                // Verify the product exists
+                // Verify the product exists using direct ID lookup
                 $this->info("\nVerifying product exists...");
-                $verification = $apiClient->findProductBySKU($testResult['product']['sku']);
-                
-                if ($verification) {
-                    $this->info("✅ Product verification successful!");
-                    $this->info("   Status: {$verification['status']}");
-                } else {
-                    $this->error("❌ Product verification failed! Product not found by SKU.");
+                try {
+                    $verification = $apiClient->makeRequest("products/{$testResult['product']['id']}");
+                    
+                    if ($verification && isset($verification['id'])) {
+                        $this->info("✅ Product verification successful!");
+                        $this->info("   Status: {$verification['status']}");
+                        $this->info("   ID: {$verification['id']}");
+                    } else {
+                        $this->error("❌ Product verification failed! Product not found by ID.");
+                    }
+                } catch (\Exception $e) {
+                    $this->error("❌ Product verification failed with error: " . $e->getMessage());
                 }
             } else {
                 $this->error("❌ Failed to create test product: " . ($testResult['error'] ?? 'Unknown error'));

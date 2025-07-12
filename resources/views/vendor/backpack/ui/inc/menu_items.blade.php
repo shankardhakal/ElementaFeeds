@@ -5,7 +5,7 @@
 <x-backpack::menu-item title="Feeds" icon="la la-rss" :link="backpack_url('feed')" />
 <x-backpack::menu-item title="Websites" icon="la la-desktop" :link="backpack_url('website')" />
 <x-backpack::menu-item title="Connections" icon="la la-link" :link="backpack_url('connection')" />
-<x-backpack::menu-item title="Cleanup" icon="la la-trash" :link="route('backpack.feed-deletion.index')" />
+<x-backpack::menu-item title="Cleanups" icon="la la-trash" :link="route('backpack.feed-deletion.index')" />
 <x-backpack::menu-item title="Settings" icon="la la-cogs" :link="backpack_url('setting')" />
 
 {{-- Add other menu items or separators as needed --}}

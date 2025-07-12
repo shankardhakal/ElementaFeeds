@@ -83,15 +83,16 @@ class WooCommerceFixProducts extends Command
             $this->info("   Product Status: " . $testResult['product']['status']);
             $this->info("   Creation Time: " . ($testResult['execution_time_ms'] ?? 'N/A') . "ms");
             
-            // Try to verify the product immediately
+            // Try to verify the product immediately using direct ID lookup
             try {
-                $verifyResult = $apiClient->findProductBySKU($testResult['product']['sku']);
+                $verifyResult = $apiClient->makeRequest("products/{$testResult['product']['id']}");
                 
-                if ($verifyResult) {
+                if ($verifyResult && isset($verifyResult['id'])) {
                     $this->info("✅ Product verification successful!");
                     $this->info("   Status: " . $verifyResult['status']);
+                    $this->info("   ID: " . $verifyResult['id']);
                 } else {
-                    $this->warn("⚠️ Product verification failed - product not found by SKU");
+                    $this->warn("⚠️ Product verification failed - product not found by ID");
                 }
             } catch (\Throwable $e) {
                 $this->error("❌ Exception during product verification: " . $e->getMessage());

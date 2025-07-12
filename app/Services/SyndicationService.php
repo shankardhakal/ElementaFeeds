@@ -9,8 +9,20 @@ use Illuminate\Support\Facades\Log;
 class SyndicationService
 {
     /**
+     * Generate a Global Unique Product Identifier (GUPID)
+     * 
+     * @param int $connectionId The feed connection ID
+     * @param string $sourceId The source product identifier
+     * @return string The generated GUPID (40-character SHA-1 hash)
+     */
+    protected function generateGUPID(int $connectionId, string $sourceId): string
+    {
+        return sha1("connection_{$connectionId}_source_{$sourceId}");
+    }
+
+    /**
      * Takes a single transformed product and syndicates it to the destination website.
-     * Uses stateless approach - no local tracking, relies on WooCommerce metadata.
+     * Uses GUPID-based approach - no SKU conflicts, relies on Global Unique Product Identifiers.
      */
     public function syndicate(array $productData, FeedWebsite $connection, ApiClientInterface $apiClient): void
     {
@@ -39,27 +51,33 @@ class SyndicationService
             return;
         }
 
-        // Add stateless metadata for reconciliation
+        // Generate GUPID for unique identification
+        $gupid = $this->generateGUPID($connection->id, $sourceIdentifier);
+
+        // Add GUPID-based metadata for reconciliation
         $productData['meta_data'] = array_merge($productData['meta_data'] ?? [], [
+            ['key' => 'gupid', 'value' => $gupid],
             ['key' => 'elementa_last_seen_timestamp', 'value' => now()->timestamp],
             ['key' => 'elementa_feed_connection_id', 'value' => $connection->id],
             ['key' => 'elementa_source_identifier', 'value' => $sourceIdentifier]
         ]);
 
         // Log the final data payload
-        Log::info("Syndicating product with stateless approach. Source SKU: {$sourceIdentifier}", [
+        Log::info("Syndicating product with GUPID-based approach. Source SKU: {$sourceIdentifier}, GUPID: {$gupid}", [
             'connection_id' => $connection->id,
+            'gupid' => $gupid,
             'final_payload' => $productData
         ]);
 
-        // Stateless approach: always attempt upsert (create or update)
-        // The API client will handle whether to create or update based on SKU lookup
+        // GUPID-based approach: always attempt upsert (create or update)
+        // The API client will handle whether to create or update based on GUPID lookup
         try {
-            $result = $apiClient->upsertProducts([$productData]);
+            $result = $apiClient->upsertProductsByGUPID([$productData]);
             
             if ($result['success']) {
                 Log::info("Successfully syndicated product", [
                     'source_sku' => $sourceIdentifier,
+                    'gupid' => $gupid,
                     'total_created' => $result['total_created'] ?? 0,
                     'total_updated' => $result['total_updated'] ?? 0,
                     'connection_id' => $connection->id
@@ -67,6 +85,7 @@ class SyndicationService
             } else {
                 Log::warning("Failed to syndicate product", [
                     'source_sku' => $sourceIdentifier,
+                    'gupid' => $gupid,
                     'connection_id' => $connection->id,
                     'failed' => $result['failed'] ?? []
                 ]);
@@ -74,6 +93,7 @@ class SyndicationService
         } catch (\Throwable $e) {
             Log::error("Exception during product syndication", [
                 'source_sku' => $sourceIdentifier,
+                'gupid' => $gupid,
                 'connection_id' => $connection->id,
                 'error' => $e->getMessage()
             ]);

@@ -257,12 +257,18 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                             // Normalize the category key using CategoryNormalizer
                             $rawCategory = $rawProduct[$connection->category_source_field] ?? '';
                             
-                            // Build the category mapping lookup (source => destination ID)
+                            // Build the category mapping lookup (source => destination ID and tags)
                             $categoryMapLookup = [];
+                            $categoryTagsLookup = [];
                             if (!empty($connection->category_mappings)) {
                                 foreach ($connection->category_mappings as $mapping) {
                                     if (isset($mapping['source']) && isset($mapping['dest']) && !empty($mapping['dest'])) {
                                         $categoryMapLookup[$mapping['source']] = (int) $mapping['dest'];
+                                        
+                                        // Store tags for this mapping
+                                        if (!empty($mapping['tags'])) {
+                                            $categoryTagsLookup[$mapping['source']] = $mapping['tags'];
+                                        }
                                     }
                                 }
                             }
@@ -281,9 +287,19 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
                                 continue;
                             }
 
+                            // Find the matching source category to get its tags
+                            $matchedTags = '';
+                            foreach ($categoryMapLookup as $sourceCat => $destId) {
+                                if ($destId === $mappedCategoryId) {
+                                    $matchedTags = $categoryTagsLookup[$sourceCat] ?? '';
+                                    break;
+                                }
+                            }
+
                             // Transform the product using the normalized category
-                            // Add the mapped category ID to the raw product for the transformer
+                            // Add the mapped category ID and tags to the raw product for the transformer
                             $rawProduct['__mappedCategoryId'] = $mappedCategoryId;
+                            $rawProduct['__mappedCategoryTags'] = $matchedTags;
                             $rawProduct['__category_source_field'] = $connection->category_source_field;
                             
                             $payload = $transformer->transform(
@@ -522,7 +538,7 @@ class ProcessChunkJob implements ShouldQueue, ShouldBeUnique
      */
     protected function getRecommendedBatchSize(int $websiteId): int
     {
-        return Cache::get("batch_size:website:{$websiteId}", 30); // Default to 30
+        return Cache::get("batch_size:website:{$websiteId}", 10); // Default to 10 (reduced from 30)
     }
     
     /**

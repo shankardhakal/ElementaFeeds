@@ -68,8 +68,9 @@
                     <hr>
                     <div id="category-mapping-ui" style="display: none;">
                         <div class="row font-weight-bold mb-2">
-                            <div class="col-md-5"><label><small>Source Category (from Feed)</small></label></div>
-                            <div class="col-md-5"><label><small>Destination Category (from {{ $website->name }})</small></label></div>
+                            <div class="col-md-4"><label><small>Source Category (from Feed)</small></label></div>
+                            <div class="col-md-4"><label><small>Destination Category (from {{ $website->name }})</small></label></div>
+                            <div class="col-md-4"><label><small>Tags (comma separated)</small></label></div>
                         </div>
                         <div id="category-mapping-container">
                             {{-- Mapping rows will be generated here by JavaScript --}}
@@ -137,18 +138,21 @@ document.addEventListener('DOMContentLoaded', function () {
     const existingMappings = @json($wizardData['category_mappings'] ?? []);
     
     // Function to add a category mapping row
-    function addCategoryMappingRow(sourceCat, destCatId, index) {
+    function addCategoryMappingRow(sourceCat, destCatId, index, tags = '') {
         const row = document.createElement('div');
         row.classList.add('form-group', 'row', 'align-items-center', 'mb-2');
         row.innerHTML = `
-            <div class="col-md-5">
+            <div class="col-md-4">
                 <input type="text" name="category_mappings[${index}][source]" class="form-control form-control-sm" value="${sourceCat}" readonly>
             </div>
-            <div class="col-md-5">
+            <div class="col-md-4">
                 <select name="category_mappings[${index}][dest]" class="form-control form-control-sm">
                     <option value="">-- Select a category --</option>
                     ${destCategories.map(c => `<option value="${c.id}" ${destCatId == c.id ? 'selected' : ''}>${c.name}</option>`).join('')}
                 </select>
+            </div>
+            <div class="col-md-4">
+                <input type="text" name="category_mappings[${index}][tags]" class="form-control form-control-sm" placeholder="Tags (comma separated)" value="${tags}">
             </div>
         `;
         mappingContainer.appendChild(row);
@@ -162,7 +166,8 @@ document.addEventListener('DOMContentLoaded', function () {
         
         existingMappings.forEach(mapping => {
             if (mapping.source && mapping.hasOwnProperty('dest')) {
-                addCategoryMappingRow(mapping.source, mapping.dest, catIndex);
+                const mappingTags = mapping.tags || '';
+                addCategoryMappingRow(mapping.source, mapping.dest, catIndex, mappingTags);
                 catIndex++;
             }
         });
@@ -201,16 +206,16 @@ document.addEventListener('DOMContentLoaded', function () {
                     mappingContainer.innerHTML = ''; // Clear existing mappings
                     
                     data.categories.forEach(sourceCat => {
-                        // Find if this source category already has a mapping
                         let existingDest = '';
+                        let existingTags = '';
                         if (existingMappings && existingMappings.length > 0) {
                             const existing = existingMappings.find(m => m.source === sourceCat);
-                            if (existing && existing.dest) {
-                                existingDest = existing.dest;
+                            if (existing) {
+                                existingDest = existing.dest || '';
+                                existingTags = existing.tags || '';
                             }
                         }
-                        
-                        addCategoryMappingRow(sourceCat, existingDest, catIndex);
+                        addCategoryMappingRow(sourceCat, existingDest, catIndex, existingTags);
                         catIndex++;
                     });
                     

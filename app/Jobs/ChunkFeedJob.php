@@ -254,7 +254,9 @@ class ChunkFeedJob implements ShouldQueue
             'category_delimiter' => $userDelimiter,
             'mapped_categories_count' => $mappedCategoriesCount,
             'raw_mappings_count' => count($rawCategoryMappings),
-            'filtering_rules_count' => count($filteringRules ?? [])
+            'filtering_rules_count' => count($filteringRules ?? []),
+            'sample_category_mappings' => array_slice($categoryMap, 0, 5),
+            'sample_raw_mappings' => array_slice($rawCategoryMappings, 0, 3)
         ]);
         
         $chunkIndex = 1;

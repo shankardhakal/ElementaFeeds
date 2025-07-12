@@ -82,4 +82,64 @@ class FeedWebsite extends Pivot
         return $this->hasOne(ConnectionCleanupRun::class, 'connection_id', 'id')
                     ->orderByDesc('created_at');
     }
+
+    /**
+     * Check if the connection is effectively active.
+     * A connection is considered active only if both the connection AND the source feed are active.
+     * 
+     * @return bool
+     */
+    public function isEffectivelyActive(): bool
+    {
+        // Load the feed relationship if not already loaded
+        if (!$this->relationLoaded('feed')) {
+            $this->load('feed');
+        }
+        
+        return $this->is_active && $this->feed->is_active;
+    }
+
+    /**
+     * Get the effective status text for display purposes.
+     * 
+     * @return string
+     */
+    public function getEffectiveStatusText(): string
+    {
+        if (!$this->relationLoaded('feed')) {
+            $this->load('feed');
+        }
+        
+        if (!$this->feed->is_active) {
+            return 'Feed Disabled';
+        }
+        
+        if (!$this->is_active) {
+            return 'Connection Paused';
+        }
+        
+        return 'Active';
+    }
+
+    /**
+     * Get the effective status class for display purposes.
+     * 
+     * @return string
+     */
+    public function getEffectiveStatusClass(): string
+    {
+        if (!$this->relationLoaded('feed')) {
+            $this->load('feed');
+        }
+        
+        if (!$this->feed->is_active) {
+            return 'bg-danger';
+        }
+        
+        if (!$this->is_active) {
+            return 'bg-secondary';
+        }
+        
+        return 'bg-success';
+    }
 }

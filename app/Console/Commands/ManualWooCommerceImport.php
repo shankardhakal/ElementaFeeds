@@ -127,27 +127,22 @@ class ManualWooCommerceImport extends Command
                     );
                     
                     if (!empty($payload)) {
-                        // Generate a unique identifier for the product
-                        $uniqueIdentifier = $this->generateUniqueIdentifier($rawProduct, $connection->feed->name);
-                        $payload['sku'] = $uniqueIdentifier; // Use the unique identifier as the SKU
+                        // Generate GUPID for unique identification
+                        $gupid = sha1("connection_{$connection->id}_source_{$uniqueIdentifier}");
                         
-                        // Add feed name as metadata
+                        // Add GUPID-based metadata
                         $payload['meta_data'] = [
-                            ['key' => 'feed_name', 'value' => $connection->feed->name]
+                            ['key' => 'gupid', 'value' => $gupid],
+                            ['key' => 'feed_name', 'value' => $connection->feed->name],
+                            ['key' => 'elementa_feed_connection_id', 'value' => $connection->id],
+                            ['key' => 'elementa_source_identifier', 'value' => $uniqueIdentifier]
                         ];
                         
                         // Ensure product is published
                         $payload['status'] = 'publish';
                         
-                        // Check if product already exists in WooCommerce
-                        $existingProduct = $apiClient->findProductBySKU($payload['sku']);
-                        
-                        if ($existingProduct) {
-                            // Update only changed fields
-                            $draftsToUpdate[] = array_merge(['id' => $existingProduct['id']], $payload);
-                        } else {
-                            $draftsToCreate[] = $payload;
-                        }
+                        // Always add to create list - GUPID system will handle create/update automatically
+                        $draftsToCreate[] = $payload;
                     } else {
                         $skippedCount++;
                     }
@@ -159,47 +154,28 @@ class ManualWooCommerceImport extends Command
                 }
             }
             
-            // Process creation
+            // Process creation using GUPID system
             if (!empty($draftsToCreate)) {
                 try {
-                    if ($useDirectMethod) {
-                        $response = $apiClient->createProductsDirectly($draftsToCreate);
-                    } else {
-                        $response = $apiClient->createProducts($draftsToCreate);
-                        
-                        // If batch failed but we're not already using direct method, try it as fallback
-                        if (($response['total_created'] ?? 0) === 0 && !$useDirectMethod) {
-                            $this->info("\nBatch creation failed, trying direct method as fallback...");
-                            $response = $apiClient->createProductsDirectly($draftsToCreate);
-                        }
-                    }
+                    // Use GUPID-based upsert which handles both create and update
+                    $response = $apiClient->upsertProductsByGUPID($draftsToCreate);
                     
                     if (($response['total_created'] ?? 0) > 0) {
                         $createdCount += $response['total_created'];
                         $importRun->increment('created_records', $response['total_created']);
-                    } else {
-                        $failedCount += count($draftsToCreate);
                     }
-                } catch (\Throwable $e) {
-                    Log::error("Failed to create products: " . $e->getMessage());
-                    $failedCount += count($draftsToCreate);
-                }
-            }
-            
-            // Process updates
-            if (!empty($draftsToUpdate)) {
-                try {
-                    $response = $apiClient->updateProducts($draftsToUpdate);
                     
                     if (($response['total_updated'] ?? 0) > 0) {
                         $updatedCount += $response['total_updated'];
                         $importRun->increment('updated_records', $response['total_updated']);
-                    } else {
-                        $failedCount += count($draftsToUpdate);
+                    }
+                    
+                    if (!empty($response['failed'])) {
+                        $failedCount += count($response['failed']);
                     }
                 } catch (\Throwable $e) {
-                    Log::error("Failed to update products: " . $e->getMessage());
-                    $failedCount += count($draftsToUpdate);
+                    Log::error("Failed to upsert products using GUPID system: " . $e->getMessage());
+                    $failedCount += count($draftsToCreate);
                 }
             }
             

@@ -24,6 +24,9 @@ class TransformationService
         // --- Standard Field Mapping ---
         $this->mapStandardFields($payload, $rawProduct, $fieldMappings);
 
+        // --- Handle Brand Field ---
+        $this->handleBrand($payload);
+
         // --- Robust external_url fallback ---
         // Try all possible URL fields in the payload, use the first non-empty one as external_url
         $urlFields = ['external_url', 'product_url', 'url', 'link'];
@@ -79,6 +82,53 @@ class TransformationService
             $payload['button_text'] = 'View Product';
         }
 
+        // --- Handle free-form Tags from ALL category mappings ---
+        if (!empty($payload['categories']) && is_array($categoryMappings)) {
+            $allTags = [];
+            
+            Log::debug('Processing tags for all categories', [
+                'total_categories' => count($payload['categories']),
+                'category_mappings_count' => count($categoryMappings),
+                'categories' => $payload['categories']
+            ]);
+            
+            // Process ALL categories, not just the first one
+            foreach ($payload['categories'] as $category) {
+                $destCatId = $category['id'] ?? null;
+                
+                if ($destCatId) {
+                    // Find all mappings for this category
+                    foreach ($categoryMappings as $mapping) {
+                        if (!empty($mapping['dest']) && (int)$mapping['dest'] === (int)$destCatId
+                            && !empty($mapping['tags'])) {
+                            
+                            Log::debug('Found matching category mapping for tags', [
+                                'mapping_dest' => $mapping['dest'],
+                                'mapping_tags' => $mapping['tags'],
+                                'dest_cat_id' => $destCatId
+                            ]);
+                            
+                            // Parse comma-separated tags and add to collection
+                            $tagNames = array_filter(array_map('trim', explode(',', $mapping['tags'])));
+                            $allTags = array_merge($allTags, $tagNames);
+                        }
+                    }
+                }
+            }
+            
+            // Deduplicate and set final tags
+            if (!empty($allTags)) {
+                $uniqueTags = array_unique($allTags);
+                $payload['tags'] = array_map(fn($t) => ['name' => $t], $uniqueTags);
+                
+                Log::debug('All tags processed and merged', [
+                    'total_categories' => count($payload['categories']),
+                    'collected_tags' => $allTags,
+                    'unique_tags' => $uniqueTags,
+                    'final_payload_tags' => $payload['tags']
+                ]);
+            }
+        }
         return $payload;
     }
 
@@ -155,6 +205,32 @@ class TransformationService
         }
     }
 
+    private function handleBrand(array &$payload): void
+    {
+        // If brand field exists, convert it to WooCommerce brands taxonomy
+        if (!empty($payload['brand'])) {
+            $brandValue = trim($payload['brand']);
+            
+            Log::debug('Processing brand field', [
+                'brand_value' => $brandValue,
+            ]);
+            
+            // Create brands key in the API payload - this is the specific key 
+            // that the WooCommerce API understands for assigning taxonomy terms
+            $payload['brands'] = [
+                ['name' => $brandValue]
+            ];
+            
+            Log::debug('Brand processed and added to brands taxonomy', [
+                'brand_value' => $brandValue,
+                'brands_structure' => $payload['brands']
+            ]);
+            
+            // Remove the original brand field from the payload
+            unset($payload['brand']);
+        }
+    }
+
     private function handleImages(array &$payload): void
     {
         // Transform a comma-separated image URL string into the array format the API expects.
@@ -174,6 +250,7 @@ class TransformationService
         
         // Otherwise try to map using the legacy approach
         $categoryMappingArray = [];
+        
         foreach ($categoryMappings as $mapping) {
             if (isset($mapping['source']) && isset($mapping['dest'])) {
                 $categoryMappingArray[$mapping['source']] = $mapping['dest'];

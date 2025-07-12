@@ -168,12 +168,22 @@
                 <td>
                     @php
                         $connectionStatusMap = [
-                            true => ['class' => 'bg-success', 'text' => 'Active'],
-                            false => ['class' => 'bg-secondary', 'text' => 'Paused'],
+                            'active' => ['class' => 'bg-success', 'text' => 'Active'],
+                            'connection_paused' => ['class' => 'bg-secondary', 'text' => 'Connection Paused'],
+                            'feed_disabled' => ['class' => 'bg-danger', 'text' => 'Feed Disabled'],
                         ];
+                        
+                        // Determine the effective status
+                        if (!$connection->feed->is_active) {
+                            $effectiveStatus = 'feed_disabled';
+                        } elseif (!$connection->is_active) {
+                            $effectiveStatus = 'connection_paused';
+                        } else {
+                            $effectiveStatus = 'active';
+                        }
                     @endphp
                     <x-status_badge 
-                        :status="$connection->is_active" 
+                        :status="$effectiveStatus" 
                         :statusMap="$connectionStatusMap" 
                     />
                 </td>
@@ -200,10 +210,14 @@
                 <td class="text-right">
                     <a href="{{ route('connection.edit', $connection->id) }}" class="btn btn-sm btn-link" title="Edit"><i class="la la-edit"></i></a>
                     
-                    @php $running = $connection->latestImportRun?->status === 'processing'; @endphp
+                    @php 
+                        $running = $connection->latestImportRun?->status === 'processing';
+                        $canRun = $connection->is_active && $connection->feed->is_active && !$running;
+                        $buttonTitle = $running ? 'Import Running' : (!$connection->feed->is_active ? 'Feed Disabled' : (!$connection->is_active ? 'Connection Paused' : 'Run Now'));
+                    @endphp
                     <form action="{{ route('connection.run', $connection->id) }}" method="POST" style="display:inline;">
                         @csrf
-                        <button type="submit" class="btn btn-sm btn-link" title="Run Now" @if($running) disabled @endif>
+                        <button type="submit" class="btn btn-sm btn-link" title="{{ $buttonTitle }}" @if(!$canRun) disabled @endif>
                             <i class="la la-play-circle"></i>
                         </button>
                     </form>

@@ -27,8 +27,8 @@ class CheckIfAdmin
      */
     private function checkIfUserIsAdmin($user)
     {
-        // return ($user->is_admin == 1);
-        return true;
+        // Simple boolean check since is_admin is cast to boolean in the User model
+        return $user && $user->is_admin;
     }
 
     /**

@@ -62,78 +62,23 @@ class DeleteFeedProductsJob implements ShouldQueue
 
             $apiClient = new WooCommerceApiClient($connection->website);
 
-            // Find all products with this connection ID using the new stateless approach
-            $productsToDelete = $apiClient->findProductsByConnectionId($this->connectionId);
-
-            if (empty($productsToDelete)) {
-                Log::info("No products found for connection #{$this->connectionId} ({$connection->feed->name} → {$connection->website->name}) to delete.");
-                $this->updateCleanupRun('completed', [
+            // Validate API connection before proceeding (especially important for dry runs)
+            if (!$this->validateApiConnection($apiClient, $isDryRun)) {
+                $this->updateCleanupRun('failed', [
                     'completed_at' => now(),
-                    'products_found' => 0,
-                    'products_processed' => 0
+                    'error_summary' => 'API connection validation failed'
                 ]);
                 return;
             }
 
-            $this->updateCleanupRun('running', ['products_found' => count($productsToDelete)]);
-
-            if ($isDryRun) {
-                Log::info("🧪 DRY RUN: Would delete " . count($productsToDelete) . " products for connection #{$this->connectionId} ({$connection->feed->name} → {$connection->website->name}).");
-            } else {
-                Log::info("Found " . count($productsToDelete) . " products to delete for connection #{$this->connectionId} ({$connection->feed->name} → {$connection->website->name}).");
-            }
-
-            // Delete products in batches
-            $batchSize = $this->getRecommendedBatchSize($connection->website_id);
-            $batches = array_chunk($productsToDelete, $batchSize);
+            // Use streaming approach to avoid memory issues
             $totalProcessed = 0;
             $totalErrors = 0;
+            $totalFound = 0;
+            $batchSize = $this->getRecommendedBatchSize($connection->website_id);
 
-            foreach ($batches as $batchIndex => $batch) {
-                // Check for cancellation
-                if ($this->isCancelled()) {
-                    Log::info("Cleanup job cancelled", [
-                        'cleanup_run_id' => $this->cleanupRunId,
-                        'processed' => $totalProcessed
-                    ]);
-                    $this->updateCleanupRun('cancelled', [
-                        'completed_at' => now(),
-                        'products_processed' => $totalProcessed
-                    ]);
-                    return;
-                }
-
-                try {
-                    if ($isDryRun) {
-                        Log::info("🧪 DRY RUN: Would delete batch #" . ($batchIndex + 1) . " with " . count($batch) . " products for connection #{$this->connectionId}");
-                        // Simulate processing time for dry run
-                        sleep(1);
-                    } else {
-                        Log::info("Deleting batch #" . ($batchIndex + 1) . " with " . count($batch) . " products for connection #{$this->connectionId}");
-                        // The API expects an array of IDs for deletion.
-                        $apiClient->batchProducts(['delete' => $batch]);
-                    }
-
-                    $totalProcessed += count($batch);
-                    
-                    if ($isDryRun) {
-                        Log::info("🧪 DRY RUN: Would have deleted batch #" . ($batchIndex + 1) . " for connection #{$this->connectionId}");
-                    } else {
-                        Log::info("Successfully deleted batch #" . ($batchIndex + 1) . " for connection #{$this->connectionId}");
-                    }
-                    
-                    // Update progress
-                    $this->updateCleanupRun('running', [
-                        'products_processed' => $totalProcessed,
-                        'products_failed' => $totalErrors
-                    ]);
-
-                } catch (\Throwable $e) {
-                    $totalErrors += count($batch);
-                    Log::error("Failed to delete batch #" . ($batchIndex + 1) . " for connection #{$this->connectionId}: " . $e->getMessage());
-                    // Continue with other batches instead of failing completely
-                }
-            }
+            // Process products in pages to avoid memory issues
+            $this->processProductsInPages($apiClient, $connection, $isDryRun, $batchSize, $totalProcessed, $totalErrors, $totalFound);
 
             // Mark as completed
             if ($isDryRun) {
@@ -144,6 +89,7 @@ class DeleteFeedProductsJob implements ShouldQueue
 
             $this->updateCleanupRun('completed', [
                 'completed_at' => now(),
+                'products_found' => $totalFound,
                 'products_processed' => $totalProcessed,
                 'products_failed' => $totalErrors
             ]);
@@ -152,14 +98,156 @@ class DeleteFeedProductsJob implements ShouldQueue
             Log::error("Failed to delete products for connection ID {$this->connectionId}: " . $e->getMessage());
             $this->updateCleanupRun('failed', [
                 'completed_at' => now(),
-                'error_summary' => $e->getMessage()
+                'error_summary' => substr($e->getMessage(), 0, 1000) // Limit error message length
             ]);
             $this->fail($e);
         }
     }
 
     /**
-     * Update cleanup run status
+     * Process products in paginated chunks to avoid memory issues
+     */
+    private function processProductsInPages(WooCommerceApiClient $apiClient, $connection, bool $isDryRun, int $batchSize, int &$totalProcessed, int &$totalErrors, int &$totalFound): void
+    {
+        $page = 1;
+        $perPage = min($batchSize, 100); // Limit page size
+        $consecutiveEmptyPages = 0;
+        
+        do {
+            // Check for cancellation at the start of each page
+            if ($this->isCancelled()) {
+                Log::info("Cleanup job cancelled during page processing", [
+                    'cleanup_run_id' => $this->cleanupRunId,
+                    'page' => $page,
+                    'processed' => $totalProcessed
+                ]);
+                $this->updateCleanupRun('cancelled', [
+                    'completed_at' => now(),
+                    'products_found' => $totalFound,
+                    'products_processed' => $totalProcessed,
+                    'products_failed' => $totalErrors
+                ]);
+                return;
+            }
+
+            try {
+                // Get products for this page using the paginated method
+                $productsPage = $apiClient->findProductsByConnectionIdPaginated($this->connectionId, $page, $perPage);
+                
+                if (empty($productsPage)) {
+                    $consecutiveEmptyPages++;
+                    if ($consecutiveEmptyPages >= 3) {
+                        Log::info("No more products found after {$consecutiveEmptyPages} empty pages, stopping pagination");
+                        break;
+                    }
+                    $page++;
+                    continue;
+                }
+                
+                $consecutiveEmptyPages = 0;
+                $totalFound += count($productsPage);
+                
+                // Update progress
+                $this->updateCleanupRun('running', [
+                    'products_found' => $totalFound
+                ]);
+
+                if ($isDryRun) {
+                    Log::info("🧪 DRY RUN: Would delete " . count($productsPage) . " products on page {$page} for connection #{$this->connectionId}");
+                    $totalProcessed += count($productsPage);
+                } else {
+                    Log::info("Processing " . count($productsPage) . " products on page {$page} for connection #{$this->connectionId}");
+                    
+                    // Process this page in smaller batches
+                    $batches = array_chunk($productsPage, $batchSize);
+                    
+                    foreach ($batches as $batchIndex => $batch) {
+                        // Check for cancellation within batch processing
+                        if ($this->isCancelled()) {
+                            Log::info("Cleanup job cancelled during batch processing", [
+                                'cleanup_run_id' => $this->cleanupRunId,
+                                'page' => $page,
+                                'batch' => $batchIndex,
+                                'processed' => $totalProcessed
+                            ]);
+                            $this->updateCleanupRun('cancelled', [
+                                'completed_at' => now(),
+                                'products_found' => $totalFound,
+                                'products_processed' => $totalProcessed,
+                                'products_failed' => $totalErrors
+                            ]);
+                            return;
+                        }
+
+                        try {
+                            // Add rate limiting between batches
+                            if ($batchIndex > 0) {
+                                usleep(250000); // 250ms delay between batches
+                            }
+                            
+                            $startTime = microtime(true);
+                            
+                            Log::info("Deleting batch " . ($batchIndex + 1) . " of " . count($batches) . " with " . count($batch) . " products for connection #{$this->connectionId}");
+                            
+                            // The API expects an array of IDs for deletion
+                            $apiClient->batchProducts(['delete' => $batch]);
+                            
+                            $processingTime = microtime(true) - $startTime;
+                            $totalProcessed += count($batch);
+                            
+                            Log::info("Successfully deleted batch " . ($batchIndex + 1) . " for connection #{$this->connectionId} in {$processingTime}s");
+                            
+                            // Update batch size based on performance
+                            $this->updateBatchSize($connection->website_id, count($batch), true, $processingTime);
+                            
+                            // Update progress more frequently
+                            $this->updateCleanupRun('running', [
+                                'products_processed' => $totalProcessed,
+                                'products_failed' => $totalErrors
+                            ]);
+
+                        } catch (\Throwable $e) {
+                            $processingTime = microtime(true) - ($startTime ?? microtime(true));
+                            $totalErrors += count($batch);
+                            Log::error("Failed to delete batch " . ($batchIndex + 1) . " on page {$page} for connection #{$this->connectionId}: " . $e->getMessage());
+                            
+                            // Update batch size based on failure
+                            $this->updateBatchSize($connection->website_id, count($batch), false, $processingTime);
+                            
+                            // Continue with other batches, but implement circuit breaker
+                            if ($totalErrors > ($totalFound * 0.5)) {
+                                Log::error("Too many failures ({$totalErrors}/{$totalFound}), stopping cleanup for connection #{$this->connectionId}");
+                                throw new \Exception("Cleanup stopped due to high failure rate: {$totalErrors}/{$totalFound} products failed");
+                            }
+                        }
+                    }
+                }
+                
+                $page++;
+                
+                // Add delay between pages to prevent overwhelming the API
+                if ($page % 5 == 0) {
+                    sleep(1); // 1 second delay every 5 pages
+                }
+                
+            } catch (\Throwable $e) {
+                Log::error("Failed to process page {$page} for connection #{$this->connectionId}: " . $e->getMessage());
+                
+                // If we can't get the page, increment error count and try next page
+                $totalErrors += $perPage; // Estimate error count
+                $page++;
+                
+                // Circuit breaker - stop if too many page failures
+                if ($page > 10 && $totalErrors > ($totalFound * 0.3)) {
+                    throw new \Exception("Too many page processing failures, stopping cleanup");
+                }
+            }
+            
+        } while ($page <= 500); // Safety limit to prevent infinite loops
+    }
+
+    /**
+     * Update cleanup run status with transaction safety
      */
     private function updateCleanupRun(string $status, array $data = []): void
     {
@@ -169,9 +257,32 @@ class DeleteFeedProductsJob implements ShouldQueue
 
         $updateData = array_merge(['status' => $status, 'updated_at' => now()], $data);
         
-        DB::table('connection_cleanup_runs')
-            ->where('id', $this->cleanupRunId)
-            ->update($updateData);
+        try {
+            DB::beginTransaction();
+            
+            $affected = DB::table('connection_cleanup_runs')
+                ->where('id', $this->cleanupRunId)
+                ->update($updateData);
+                
+            if ($affected === 0) {
+                Log::warning("No cleanup run updated", [
+                    'cleanup_run_id' => $this->cleanupRunId,
+                    'status' => $status,
+                    'data' => $data
+                ]);
+            }
+            
+            DB::commit();
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Failed to update cleanup run status", [
+                'cleanup_run_id' => $this->cleanupRunId,
+                'status' => $status,
+                'error' => $e->getMessage()
+            ]);
+            // Don't throw here as it would stop the main job
+        }
     }
 
     /**
@@ -207,12 +318,67 @@ class DeleteFeedProductsJob implements ShouldQueue
     }
     
     /**
-     * Get the recommended batch size for a specific website
+     * Validate API connection before proceeding with cleanup
+     */
+    private function validateApiConnection(WooCommerceApiClient $apiClient, bool $isDryRun): bool
+    {
+        try {
+            Log::info("Validating API connection for connection #{$this->connectionId}" . ($isDryRun ? " (dry run)" : ""));
+            
+            // Try to fetch products to validate connection using the correct method name
+            $testProducts = $apiClient->findProductsByConnectionId($this->connectionId);
+            
+            if ($isDryRun) {
+                Log::info("🧪 DRY RUN: API connection validated successfully for connection #{$this->connectionId}");
+            } else {
+                Log::info("API connection validated successfully for connection #{$this->connectionId}");
+            }
+            
+            return true;
+            
+        } catch (\Exception $e) {
+            Log::error("API connection validation failed for connection #{$this->connectionId}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Get the recommended batch size for a specific website with adaptive sizing
      */
     protected function getRecommendedBatchSize(int $websiteId): int
     {
         $cacheKey = "batch_size:website:{$websiteId}";
-        // A lower batch size for deletion might be safer.
-        return Cache::get($cacheKey, 25);
+        $defaultBatchSize = 20; // Conservative default for deletion
+        
+        $cachedSize = Cache::get($cacheKey, $defaultBatchSize);
+        
+        // Ensure batch size is within reasonable bounds
+        return max(5, min(50, $cachedSize));
+    }
+
+    /**
+     * Update batch size based on performance metrics
+     */
+    private function updateBatchSize(int $websiteId, int $currentBatchSize, bool $success, float $processingTime): void
+    {
+        $cacheKey = "batch_size:website:{$websiteId}";
+        
+        // If successful and fast, we can increase batch size
+        if ($success && $processingTime < 5.0) {
+            $newBatchSize = min(50, $currentBatchSize + 2);
+        }
+        // If failed or slow, decrease batch size
+        elseif (!$success || $processingTime > 15.0) {
+            $newBatchSize = max(5, $currentBatchSize - 3);
+        }
+        // Otherwise keep current size
+        else {
+            $newBatchSize = $currentBatchSize;
+        }
+        
+        if ($newBatchSize !== $currentBatchSize) {
+            Cache::put($cacheKey, $newBatchSize, now()->addHours(24));
+            Log::info("Updated batch size for website {$websiteId} from {$currentBatchSize} to {$newBatchSize}");
+        }
     }
 }

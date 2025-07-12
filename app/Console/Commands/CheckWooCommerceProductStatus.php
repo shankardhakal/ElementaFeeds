@@ -87,17 +87,24 @@ class CheckWooCommerceProductStatus extends Command
                 $this->info("   Product Status: " . $testResult['product']['status']);
                 $this->info("   Creation Time: " . $testResult['execution_time_ms'] . "ms");
                 
-                // Verify product
+                // Verify product using GUPID-based system
                 $this->info("\nVerifying test product...");
                 sleep(1); // Wait a moment for indexing
                 
-                $verifyResult = $apiClient->findProductBySKU($testResult['product']['sku']);
-                
-                if ($verifyResult) {
-                    $this->info("✅ Product verification successful!");
-                    $this->info("   Status: " . $verifyResult['status']);
-                } else {
-                    $this->error("❌ Product verification failed! The product could not be found by SKU.");
+                // Since we need connection ID for GUPID lookup, we'll use a generic approach
+                // Try to find the product by ID instead
+                try {
+                    $verifyResult = $apiClient->makeRequest("products/{$testResult['product']['id']}");
+                    
+                    if ($verifyResult && isset($verifyResult['id'])) {
+                        $this->info("✅ Product verification successful!");
+                        $this->info("   Status: " . $verifyResult['status']);
+                        $this->info("   ID: " . $verifyResult['id']);
+                    } else {
+                        $this->error("❌ Product verification failed! The product could not be found by ID.");
+                    }
+                } catch (\Exception $e) {
+                    $this->error("❌ Product verification failed with error: " . $e->getMessage());
                 }
             } else {
                 $this->error("❌ Failed to create test product: " . ($testResult['error'] ?? 'Unknown error'));

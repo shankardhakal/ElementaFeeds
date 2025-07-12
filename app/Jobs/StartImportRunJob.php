@@ -57,6 +57,21 @@ class StartImportRunJob implements ShouldQueue, ShouldBeUnique
     {
         Log::info("Starting import run for connection: {$this->feedWebsiteConnection->name} (#{$this->feedWebsiteConnection->id})");
 
+        // Load the feed relationship to check if it's active
+        $this->feedWebsiteConnection->load('feed');
+        
+        // Check if the source feed is active
+        if (!$this->feedWebsiteConnection->feed->is_active) {
+            Log::warning("Import run aborted: Source feed '{$this->feedWebsiteConnection->feed->name}' is disabled (ID: {$this->feedWebsiteConnection->feed->id})");
+            return;
+        }
+        
+        // Check if the connection itself is active
+        if (!$this->feedWebsiteConnection->is_active) {
+            Log::warning("Import run aborted: Connection '{$this->feedWebsiteConnection->name}' is disabled (ID: {$this->feedWebsiteConnection->id})");
+            return;
+        }
+
         // Create a record in the `import_runs` table to track this specific execution.
         // The unique constraint on (feed_website_id, status) prevents concurrent runs.
         try {

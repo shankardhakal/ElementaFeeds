@@ -13,7 +13,7 @@
             <strong>Warning:</strong> This will permanently delete all products imported from the selected feed across all connected websites. This action cannot be undone.
           </div>
           
-          <form method="POST" action="{{ route('admin.feed-deletion.cleanup') }}">
+          <form method="POST" action="{{ route('backpack.feed-deletion.cleanup') }}">
             @csrf
             <div class="form-group">
               <label for="feed_id">Select Feed:</label>

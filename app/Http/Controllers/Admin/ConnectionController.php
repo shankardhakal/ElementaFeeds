@@ -18,6 +18,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Log;
 use Alert; 
 
 class ConnectionController extends Controller
@@ -36,7 +37,7 @@ class ConnectionController extends Controller
         $perPage = in_array($request->get('per_page'), [10, 25, 50, 100]) ? $request->get('per_page') : 25;
         
         $query = FeedWebsite::with([
-            'feed:id,name',
+            'feed:id,name,is_active',
             'website:id,name', 
             'latestImportRun:id,feed_website_id,status,created_at'
         ]);
@@ -224,6 +225,11 @@ class ConnectionController extends Controller
             'unique_identifier' => 'Unique Identifier (Feed Name + Source ID)', // Added field
         ];
 
+        // Add brand field for WooCommerce connections
+        if ($website->platform === 'woocommerce') {
+            $data['destination_fields']['brand'] = 'Brand';
+        }
+
         try {
             $apiClient = ($website->platform === 'woocommerce')
                 ? new WooCommerceApiClient($website)
@@ -287,11 +293,42 @@ class ConnectionController extends Controller
      */
     public function storeStep3(Request $request)
     {
+        // Debug: Log the raw request data to understand what's being submitted
+        Log::info('Step3 Form Submission Debug', [
+            'all_input' => $request->all(),
+            'category_mappings' => $request->input('category_mappings', []),
+            'field_mappings' => $request->input('field_mappings', [])
+        ]);
+
         $validated = $request->validate([
             'field_mappings' => 'required|array',
-            'category_source_field' => 'required|string',
-            'category_delimiter' => 'nullable|string', // Can be nullable
-            'category_mappings' => 'required|array',
+            'category_source_field' => 'nullable|string', // Make nullable for flexibility
+            'category_delimiter' => 'nullable|string',
+            'category_mappings' => 'nullable|array', // Make nullable since some might be empty
+            'category_mappings.*.source' => 'nullable|string', // Allow nullable for unmapped rows
+            'category_mappings.*.dest' => 'nullable|string', // Allow nullable and string (will convert to int later)
+            'category_mappings.*.tags' => 'nullable|string',
+        ]);
+
+        // Clean up category mappings - remove empty mappings and convert dest to int
+        if (!empty($validated['category_mappings'])) {
+            $validated['category_mappings'] = array_filter($validated['category_mappings'], function($mapping) {
+                // Only keep mappings that have both source and dest
+                return !empty($mapping['source']) && !empty($mapping['dest']);
+            });
+            
+            // Convert dest to integer
+            foreach ($validated['category_mappings'] as &$mapping) {
+                if (isset($mapping['dest'])) {
+                    $mapping['dest'] = (int) $mapping['dest'];
+                }
+            }
+        }
+
+        // Debug: Log the cleaned data
+        Log::info('Step3 Cleaned Data', [
+            'validated' => $validated,
+            'category_mappings_count' => count($validated['category_mappings'] ?? [])
         ]);
 
         // Merge the validated data into the session
@@ -393,8 +430,22 @@ class ConnectionController extends Controller
      */
     public function runNow(int $id)
     {
-        $connection = FeedWebsite::findOrFail($id);
+        $connection = FeedWebsite::with('feed')->findOrFail($id);
         $website = $connection->website;
+
+        // Check if the source feed is active
+        if (!$connection->feed->is_active) {
+            $message = "<strong>Cannot Start Import:</strong> The source feed '{$connection->feed->name}' is currently disabled. Please enable the feed first.";
+            \Alert::error($message)->flash();
+            return redirect()->route('connection.index');
+        }
+
+        // Check if the connection itself is active
+        if (!$connection->is_active) {
+            $message = "<strong>Cannot Start Import:</strong> The connection '{$connection->name}' is currently disabled. Please enable the connection first.";
+            \Alert::error($message)->flash();
+            return redirect()->route('connection.index');
+        }
 
         // The job's WithoutOverlapping middleware uses a lock based on the website ID.
         // We manually check for this lock *before* dispatching the job.
@@ -472,24 +523,31 @@ class ConnectionController extends Controller
         $connection = FeedWebsite::with(['feed', 'website'])->findOrFail($id);
         
         // Store all connection data in the session
+        // Store full connection data in the session for editing
         session(['connection_wizard_data' => [
-            'name' => $connection->name,
-            'website_id' => $connection->website_id,
-            'feed_id' => $connection->feed_id,
-            'feed_name' => $connection->feed->name,
-            'website_name' => $connection->website->name,
+            'is_edit' => true,
             'id' => $connection->id,
-            'filters' => $connection->filtering_rules,
-            'field_mappings' => $connection->field_mappings,
+            'feed_id' => $connection->feed_id,
+            'website_id' => $connection->website_id,
+            'name' => $connection->name,
+            'filters' => $connection->filtering_rules ?? [],
+            'field_mappings' => $connection->field_mappings ?? [],
             'category_source_field' => $connection->category_source_field,
             'category_delimiter' => $connection->category_delimiter,
             'category_mappings' => $connection->category_mappings ?? [],
             'attribute_mappings' => $connection->attribute_mappings ?? [],
             'schedule' => $connection->schedule,
-            'update_settings' => $connection->update_settings,
+            'update_settings' => [
+                'skip_new' => $connection->update_settings['skip_new'] ?? false,
+                'update_existing' => $connection->update_settings['update_existing'] ?? false,
+                'update_logic' => $connection->update_settings['update_logic'] ?? 'all',
+                'partial_update_fields' => $connection->update_settings['partial_update_fields'] ?? [],
+                'stale_action' => $connection->update_settings['stale_action'] ?? 'delete',
+                'stale_days' => $connection->update_settings['stale_days'] ?? 30,
+            ],
             'is_active' => $connection->is_active,
-            // Store a flag to indicate we're in edit mode
-            'is_edit' => true,
+            'feed_name' => $connection->feed->name,
+            'website_name' => $connection->website->name,
         ]]);
         
         \Alert::info("Editing connection '{$connection->name}'. Navigate through the steps to update configuration.")->flash();
@@ -545,8 +603,10 @@ class ConnectionController extends Controller
                 'ID',
                 'Connection Name', 
                 'Source Feed',
+                'Feed Status',
+                'Connection Status',
+                'Effective Status',
                 'Destination Website',
-                'Status',
                 'Last Run',
                 'Last Run Status',
                 'Created At',
@@ -554,12 +614,16 @@ class ConnectionController extends Controller
             ]);
             
             foreach ($connections as $connection) {
+                $effectiveStatus = $connection->isEffectivelyActive() ? 'Active' : $connection->getEffectiveStatusText();
+                
                 fputcsv($file, [
                     $connection->id,
                     $connection->name,
                     $connection->feed->name ?? 'N/A',
-                    $connection->website->name ?? 'N/A',
+                    $connection->feed->is_active ? 'Active' : 'Disabled',
                     $connection->is_active ? 'Active' : 'Paused',
+                    $effectiveStatus,
+                    $connection->website->name ?? 'N/A',
                     $connection->latestImportRun?->created_at?->format('Y-m-d H:i:s') ?? 'Never',
                     $connection->latestImportRun?->status ?? 'No Runs',
                     $connection->created_at->format('Y-m-d H:i:s'),
